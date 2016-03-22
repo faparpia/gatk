@@ -226,8 +226,8 @@ test {
             // This is good when e.g. you are done for the day and want to run tests on your machine overnight.
             excludeGroups 'cloud_todo', 'bucket_todo'
         } else {
-            // run only the local tests
-            excludeGroups 'cloud', 'bucket', 'cloud_todo', 'bucket_todo'
+            // run only the local tests, but excluding sga-related for now
+            excludeGroups 'cloud', 'bucket', 'cloud_todo', 'bucket_todo', 'sga'
         }
         if (SPARK == "false") {
             // exclude Spark tests
