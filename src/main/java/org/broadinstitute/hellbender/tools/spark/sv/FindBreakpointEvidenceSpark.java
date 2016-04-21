@@ -739,7 +739,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
      */
     private static final class KmerCleaner {
         private static final int MAX_INTERVALS = 4;
-        private final HopscotchHashSet<KmerAndInterval> kmerSet = new HopscotchHashSet<>(10000000);
+        private final HopscotchHashSet<KmerAndInterval> kmerSet = new HopscotchHashSet<>(600000);
 
         public Iterable<KmerAndInterval> call( final Iterator<KmerAndInterval> kmerItr ) {
 
