@@ -17,8 +17,9 @@ import java.util.Random;
  * Unit tests for HopscotchHashSet.
  */
 public class HopscotchHashSetTest extends BaseTest {
+    private static final int RAND_SEED = 0xdeadf00;
     private static final int HHASH_NVALS = 10000;
-    private static final int N_TRIALS = 10000;
+    private static final int N_TRIALS = 1000;
 
     @Test(groups = "spark")
     void legalCapacitiesTest() {
@@ -47,42 +48,58 @@ public class HopscotchHashSetTest extends BaseTest {
 
     @Test(groups = "spark")
     void loadRandomIntsTest() {
-        final Random rng = new Random(0xdeadf00);
+        final Random rng = new Random(RAND_SEED);
         for ( int trialNo = 0; trialNo != N_TRIALS; ++trialNo ) {
             final HashSet<Integer> hashSet = new HashSet<>();
-            final HopscotchHashSet<Integer> hhashSet = new HopscotchHashSet<>(HHASH_NVALS);
+            final HopscotchHashSet<Integer> hHashSet = new HopscotchHashSet<>(HHASH_NVALS);
             final String trialMsg = "trialNo="+trialNo;
             for ( int valNo = 0; valNo != HHASH_NVALS; ++valNo ) {
                 final Integer randVal = rng.nextInt();
-                hhashSet.add(randVal);
+                hHashSet.add(randVal);
                 hashSet.add(randVal);
             }
-            Assert.assertEquals(hashSet.size(), hhashSet.size(), trialMsg);
+            Assert.assertEquals(hashSet.size(), hHashSet.size(), trialMsg);
             for ( final Integer val : hashSet ) {
-                Assert.assertTrue(hhashSet.contains(val), trialMsg+", testVal="+val);
+                Assert.assertTrue(hHashSet.contains(val), trialMsg+", testVal="+val);
             }
-            for ( final Integer val : hhashSet ) {
+            for ( final Integer val : hHashSet ) {
                 Assert.assertTrue(hashSet.contains(val), trialMsg+", testVal="+val);
             }
 
             for ( final Integer val : hashSet ) {
-                Assert.assertTrue(hhashSet.remove(val));
+                Assert.assertTrue(hHashSet.remove(val));
             }
             hashSet.clear();
 
-            Assert.assertEquals(hashSet.size(), hhashSet.size(), trialMsg);
+            Assert.assertEquals(hashSet.size(), hHashSet.size(), trialMsg);
             for ( final Integer val : hashSet ) {
-                Assert.assertTrue(hhashSet.contains(val), trialMsg+", testVal="+val);
+                Assert.assertTrue(hHashSet.contains(val), trialMsg+", testVal="+val);
             }
-            for ( final Integer val : hhashSet ) {
+            for ( final Integer val : hHashSet ) {
                 Assert.assertTrue(hashSet.contains(val), trialMsg+", testVal="+val);
             }
         }
     }
 
     @Test(groups = "spark")
+    void removeAllWithIteratorTest() {
+        final Random rng = new Random(RAND_SEED);
+        final HopscotchHashSet<Integer> hHashSet = new HopscotchHashSet<>(HHASH_NVALS);
+        for ( int valNo = 0; valNo != HHASH_NVALS; ++valNo ) {
+            hHashSet.add(rng.nextInt());
+        }
+        final Iterator<Integer> itr = hHashSet.iterator();
+        while ( itr.hasNext() ) {
+            final Integer next = itr.next();
+            itr.remove();
+            Assert.assertFalse(hHashSet.contains(next));
+        }
+        Assert.assertEquals(hHashSet.size(), 0);
+    }
+
+    @Test(groups = "spark")
     void serializationTest() {
-        final Random rng = new Random(0xdeadf00);
+        final Random rng = new Random(RAND_SEED);
         final HopscotchHashSet<Integer> hHashSet = new HopscotchHashSet<>(HHASH_NVALS);
         for ( int valNo = 0; valNo != HHASH_NVALS; ++valNo ) {
             hHashSet.add(rng.nextInt());

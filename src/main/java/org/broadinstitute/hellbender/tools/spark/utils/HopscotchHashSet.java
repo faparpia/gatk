@@ -138,6 +138,17 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
         if ( entry == null ) throw new UnsupportedOperationException("This collection cannot contain null.");
         if ( size == capacity ) resize();
         try {
+            return insert(entry) == entry;
+        } catch ( final IllegalStateException ise ) {
+            resize();
+            return insert(entry) == entry;
+        }
+    }
+
+    public T put( final T entry ) {
+        if ( entry == null ) throw new UnsupportedOperationException("This collection cannot contain null.");
+        if ( size == capacity ) resize();
+        try {
             return insert(entry);
         } catch ( final IllegalStateException ise ) {
             resize();
@@ -190,7 +201,7 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
         size = 0;
     }
 
-    private boolean insert( final T entry ) {
+    private T insert( final T entry ) {
         final int bucketIndex = hashToIndex(entry.hashCode());
 
         // if there's a squatter where the new entry should go, move it elsewhere and put the entry there
@@ -201,14 +212,15 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
             buckets[bucketIndex] = entry;
             status[bucketIndex] = Byte.MIN_VALUE;
             size += 1;
-            return true;
+            return entry;
         }
 
         // make sure the entry isn't already present
         int endOfChainIndex = bucketIndex;
         while ( true ) {
             // if entry is already in the set
-            if ( buckets[endOfChainIndex].equals(entry) ) return false;
+            final T tableEntry = buckets[endOfChainIndex];
+            if ( tableEntry.equals(entry) ) return tableEntry;
             final int offset = getOffset(endOfChainIndex);
             if ( offset == 0 ) break;
             endOfChainIndex = getIndex(endOfChainIndex, offset);
@@ -220,7 +232,7 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
         // put the new entry into the empty bucket
         buckets[emptyBucketIndex] = entry;
         size += 1;
-        return true;
+        return entry;
     }
 
     private int hashToIndex( final int hashVal ) {
@@ -437,25 +449,37 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
     }
 
     private final class CompleteIterator implements Iterator<T> {
-        private int bucketIndex;
-        private T lastEntry;
+        private int bucketHeadIndex;
+        private int currentElementIndex;
+        private int lastElementIndex;
 
-        CompleteIterator() { this.bucketIndex = findNext(capacity-1); }
+        CompleteIterator() { bucketHeadIndex = lastElementIndex = -1; nextBucketHead(); }
 
-        @Override public boolean hasNext() { return bucketIndex >= 0; }
+        @Override public boolean hasNext() { return bucketHeadIndex < buckets.length; }
 
         @Override public T next() {
-            if ( bucketIndex < 0 ) throw new NoSuchElementException("HopscotchHashSet iterator is exhausted.");
-            lastEntry = buckets[bucketIndex];
-            bucketIndex = findNext(bucketIndex - 1);
-            return lastEntry;
+            if ( !hasNext() ) throw new NoSuchElementException("Iterator exhausted.");
+            lastElementIndex = currentElementIndex;
+            final int offset = getOffset(currentElementIndex);
+            if ( offset == 0 ) nextBucketHead();
+            else currentElementIndex = getIndex(currentElementIndex, offset);
+            return buckets[lastElementIndex];
         }
 
-        private int findNext( int index ) {
-            while ( index >= 0 && buckets[index] == null ) {
-                index -= 1;
+        @Override public void remove() {
+            if ( lastElementIndex < 0 ) throw new IllegalStateException("Remove without next.");
+            HopscotchHashSet.this.remove(buckets[lastElementIndex]);
+            if ( buckets[lastElementIndex] != null ) currentElementIndex = lastElementIndex;
+            lastElementIndex = -1;
+        }
+
+        private void nextBucketHead() {
+            while ( ++bucketHeadIndex < buckets.length ) {
+                if ( isChainHead(bucketHeadIndex) ) {
+                    currentElementIndex = bucketHeadIndex;
+                    return;
+                }
             }
-            return index;
         }
     }
 
