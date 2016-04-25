@@ -7,6 +7,9 @@ import org.broadinstitute.hellbender.utils.read.GATKRead;
 import java.util.*;
 import java.util.function.Function;
 
+// TODO: figure out a way to include funky template size data without swamping ourselves in a sea of evidence
+// TODO: maybe count each such read as fractional evidence?
+
 /**
  * Figures out what kind of BreakpointEvidence, if any, a read represents.
  */

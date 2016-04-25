@@ -4,7 +4,6 @@ import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import org.apache.spark.serializer.KryoRegistrator;
-import org.broadinstitute.hellbender.engine.spark.GATKRegistrator;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.utils.read.GATKRead;
 

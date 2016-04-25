@@ -5,7 +5,6 @@ import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.google.cloud.dataflow.sdk.options.PipelineOptions;
 import org.apache.spark.serializer.KryoRegistrator;
-import org.broadinstitute.hellbender.engine.spark.GATKRegistrator;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.tools.spark.utils.HopscotchHashSet;
 import org.broadinstitute.hellbender.utils.BaseUtils;

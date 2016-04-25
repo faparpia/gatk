@@ -45,8 +45,7 @@ public class ReadMetadataTest extends BaseTest {
         final ByteArrayOutputStream bos = new ByteArrayOutputStream();
         final Output out = new Output(bos);
         final Kryo kryo = new Kryo();
-        kryo.register(ReadMetadata.class, new ReadMetadata.Serializer());
-        kryo.register(ReadMetadata.ReadGroupFragmentStatistics.class, new ReadMetadata.ReadGroupFragmentStatistics.Serializer());
+        new ReadMetadata.Registrator().registerClasses(kryo);
         kryo.writeClassAndObject(out, readMetadata);
         out.flush();
 

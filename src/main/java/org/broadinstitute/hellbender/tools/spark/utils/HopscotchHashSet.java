@@ -449,28 +449,48 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
     }
 
     private final class CompleteIterator implements Iterator<T> {
+        // Class Invariants:
+        //  bucketHeadIndex is a valid bucket head until the iteration is complete.
+        //    When iteration is complete it has the value buckets.length.
+        //  currentElementIndex points to the element that the next method will return.
+        //    It is always primed and ready to go until iteration is complete.
+        //    When iteration is complete its value should be ignored (it's not set to anything in particular).
+        //  previousElementIndex is set by calling next.  It is set to the invalid value -1 following a call to remove,
+        //    as well as at the beginning (before the first call to next) of iteration.  It remains valid when iteration
+        //    is complete, unless and until remove is called.
         private int bucketHeadIndex;
         private int currentElementIndex;
-        private int lastElementIndex;
+        private int previousElementIndex;
 
-        CompleteIterator() { bucketHeadIndex = lastElementIndex = -1; nextBucketHead(); }
+        CompleteIterator() { bucketHeadIndex = previousElementIndex = -1; nextBucketHead(); }
 
         @Override public boolean hasNext() { return bucketHeadIndex < buckets.length; }
 
         @Override public T next() {
             if ( !hasNext() ) throw new NoSuchElementException("Iterator exhausted.");
-            lastElementIndex = currentElementIndex;
+
+            previousElementIndex = currentElementIndex;
+
             final int offset = getOffset(currentElementIndex);
+            // if we're at the end of a chain, advance to the next bucket, otherwise step to the next item in the chain.
             if ( offset == 0 ) nextBucketHead();
             else currentElementIndex = getIndex(currentElementIndex, offset);
-            return buckets[lastElementIndex];
+
+            return buckets[previousElementIndex];
         }
 
         @Override public void remove() {
-            if ( lastElementIndex < 0 ) throw new IllegalStateException("Remove without next.");
-            HopscotchHashSet.this.remove(buckets[lastElementIndex]);
-            if ( buckets[lastElementIndex] != null ) currentElementIndex = lastElementIndex;
-            lastElementIndex = -1;
+            if ( previousElementIndex < 0 ) throw new IllegalStateException("Remove without next.");
+
+            HopscotchHashSet.this.remove(buckets[previousElementIndex]);
+
+            // If we haven't deleted the end of a chain, we'll now have an unseen element under previousElementIndex.
+            // So we need to back up and let the user know about it at the next call to the next method.  If we
+            // have deleted an end of chain, then the bucket will be empty and no adjustment needs to be made.
+            if ( buckets[previousElementIndex] != null ) currentElementIndex = previousElementIndex;
+
+            // Set state to "invalid to call remove again".
+            previousElementIndex = -1;
         }
 
         private void nextBucketHead() {
@@ -483,7 +503,7 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
         }
     }
 
-    public static final class Serializer<T> extends com.esotericsoftware.kryo.Serializer<HopscotchHashSet<T>> {
+    private static final class Serializer<T> extends com.esotericsoftware.kryo.Serializer<HopscotchHashSet<T>> {
         @Override
         public void write( final Kryo kryo, final Output output, final HopscotchHashSet<T> hopscotchHashSet ) {
             hopscotchHashSet.serialize(kryo, output);

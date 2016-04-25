@@ -7,7 +7,6 @@ import htsjdk.samtools.SAMFileHeader;
 import htsjdk.samtools.SAMReadGroupRecord;
 import htsjdk.samtools.SAMSequenceRecord;
 import org.apache.spark.serializer.KryoRegistrator;
-import org.broadinstitute.hellbender.engine.spark.GATKRegistrator;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 
 import java.util.HashMap;
@@ -15,7 +14,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * A bag of data about reads:  contig name to id mapping, fragment length statistics by read group.
+ * A bag of data about reads:  contig name to id mapping, fragment length statistics by read group, mean length.
  */
 public class ReadMetadata {
     private final Map<String, Short> contigNameToID;
@@ -99,7 +98,7 @@ public class ReadMetadata {
 
     public int getMeanBasesPerTemplate() { return meanBasesPerTemplate; }
 
-    public static final class Serializer extends com.esotericsoftware.kryo.Serializer<ReadMetadata> {
+    private static final class Serializer extends com.esotericsoftware.kryo.Serializer<ReadMetadata> {
         @Override
         public void write( final Kryo kryo, final Output output, final ReadMetadata readMetadata ) {
             readMetadata.serialize(kryo, output);
@@ -133,7 +132,7 @@ public class ReadMetadata {
         public float getMedianFragmentSize() { return medianFragmentSize; }
         public float getMedianFragmentSizeVariance() { return medianFragmentSizeVariance; }
 
-        public static final class Serializer
+        private static final class Serializer
                 extends com.esotericsoftware.kryo.Serializer<ReadGroupFragmentStatistics> {
             @Override
             public void write( final Kryo kryo, final Output output,
