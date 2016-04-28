@@ -1,5 +1,6 @@
 package org.broadinstitute.hellbender.tools.spark.sv;
 
+import com.esotericsoftware.kryo.DefaultSerializer;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
@@ -18,6 +19,7 @@ import java.util.Set;
  * K must be between 1 and 63 (but it's silly to use this class for K < 33).
  * Canonicalization is unimplemented for even K.
  */
+@DefaultSerializer(SVKmer.Serializer.class)
 public class SVKmer implements Comparable<SVKmer> {
     // these are treated as K-bit unsigned integers
     private final long valHigh; // most significant K bits
@@ -250,7 +252,7 @@ public class SVKmer implements Comparable<SVKmer> {
         return result;
     }
 
-    private static final class Serializer extends com.esotericsoftware.kryo.Serializer<SVKmer> {
+    public static final class Serializer extends com.esotericsoftware.kryo.Serializer<SVKmer> {
         @Override
         public void write(final Kryo kryo, final Output output, final SVKmer svKmer ) {
             svKmer.serialize(kryo, output);
@@ -259,13 +261,6 @@ public class SVKmer implements Comparable<SVKmer> {
         @Override
         public SVKmer read(final Kryo kryo, final Input input, final Class<SVKmer> klass ) {
             return new SVKmer(kryo, input);
-        }
-    }
-
-    public static final class Registrator implements KryoRegistrator {
-        @Override
-        public void registerClasses( final Kryo kryo ) {
-            kryo.register(SVKmer.class, new SVKmer.Serializer());
         }
     }
 }

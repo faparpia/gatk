@@ -108,7 +108,6 @@ public class HopscotchHashSetTest extends BaseTest {
         final ByteArrayOutputStream bos = new ByteArrayOutputStream();
         final Output out = new Output(bos);
         final Kryo kryo = new Kryo();
-        new HopscotchHashSet.Registrator().registerClasses(kryo);
         kryo.writeClassAndObject(out, hHashSet);
         out.flush();
 

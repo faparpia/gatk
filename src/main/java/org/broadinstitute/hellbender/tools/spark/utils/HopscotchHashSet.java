@@ -1,5 +1,6 @@
 package org.broadinstitute.hellbender.tools.spark.utils;
 
+import com.esotericsoftware.kryo.DefaultSerializer;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
@@ -15,6 +16,7 @@ import java.util.*;
  * You can make it pretty much equally fast as HashSet by replacing the prime-number table sizing with power-of-2 table
  * sizing, but then it'll behave just as badly as HashSet given crappy hashCode implementations.
  */
+@DefaultSerializer(HopscotchHashSet.Serializer.class)
 public final class HopscotchHashSet<T> extends AbstractSet<T> {
     // For power-of-2 table sizes add this line
     //private static final int maxCapacity = Integer.MAX_VALUE/2 + 1;
@@ -503,7 +505,7 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
         }
     }
 
-    private static final class Serializer<T> extends com.esotericsoftware.kryo.Serializer<HopscotchHashSet<T>> {
+    public static final class Serializer<T> extends com.esotericsoftware.kryo.Serializer<HopscotchHashSet<T>> {
         @Override
         public void write( final Kryo kryo, final Output output, final HopscotchHashSet<T> hopscotchHashSet ) {
             hopscotchHashSet.serialize(kryo, output);
@@ -512,13 +514,6 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
         @Override
         public HopscotchHashSet<T> read( final Kryo kryo, final Input input, final Class<HopscotchHashSet<T>> klass ) {
             return new HopscotchHashSet<>(kryo, input);
-        }
-    }
-
-    public static final class Registrator implements KryoRegistrator {
-        @Override
-        public void registerClasses( final Kryo kryo ) {
-            kryo.register(HopscotchHashSet.class, new HopscotchHashSet.Serializer<>());
         }
     }
 }

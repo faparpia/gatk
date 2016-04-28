@@ -72,7 +72,6 @@ public class BreakpointEvidenceTest extends BaseTest {
         final ByteArrayOutputStream bos = new ByteArrayOutputStream();
         final Output out = new Output(bos);
         final Kryo kryo = new Kryo();
-        new BreakpointEvidence.Registrator().registerClasses(kryo);
         kryo.writeClassAndObject(out, evidenceList);
         out.flush();
 

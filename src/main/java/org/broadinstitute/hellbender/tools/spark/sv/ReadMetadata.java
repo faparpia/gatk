@@ -1,5 +1,6 @@
 package org.broadinstitute.hellbender.tools.spark.sv;
 
+import com.esotericsoftware.kryo.DefaultSerializer;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
@@ -16,6 +17,7 @@ import java.util.Map;
 /**
  * A bag of data about reads:  contig name to id mapping, fragment length statistics by read group, mean length.
  */
+@DefaultSerializer(ReadMetadata.Serializer.class)
 public class ReadMetadata {
     private final Map<String, Short> contigNameToID;
     private final Map<String, ReadGroupFragmentStatistics> readGroupToFragmentStatistics;
@@ -98,7 +100,7 @@ public class ReadMetadata {
 
     public int getMeanBasesPerTemplate() { return meanBasesPerTemplate; }
 
-    private static final class Serializer extends com.esotericsoftware.kryo.Serializer<ReadMetadata> {
+    public static final class Serializer extends com.esotericsoftware.kryo.Serializer<ReadMetadata> {
         @Override
         public void write( final Kryo kryo, final Output output, final ReadMetadata readMetadata ) {
             readMetadata.serialize(kryo, output);
@@ -110,6 +112,7 @@ public class ReadMetadata {
         }
     }
 
+    @DefaultSerializer(ReadGroupFragmentStatistics.Serializer.class)
     public static final class ReadGroupFragmentStatistics {
         private final float medianFragmentSize;
         private final float medianFragmentSizeVariance;
@@ -132,7 +135,7 @@ public class ReadMetadata {
         public float getMedianFragmentSize() { return medianFragmentSize; }
         public float getMedianFragmentSizeVariance() { return medianFragmentSizeVariance; }
 
-        private static final class Serializer
+        public static final class Serializer
                 extends com.esotericsoftware.kryo.Serializer<ReadGroupFragmentStatistics> {
             @Override
             public void write( final Kryo kryo, final Output output,
@@ -145,14 +148,6 @@ public class ReadMetadata {
                                                      final Class<ReadGroupFragmentStatistics> klass ) {
                 return new ReadGroupFragmentStatistics(kryo, input);
             }
-        }
-    }
-
-    public static final class Registrator implements KryoRegistrator {
-        @Override
-        public void registerClasses( final Kryo kryo ) {
-            kryo.register(ReadMetadata.class, new ReadMetadata.Serializer());
-            kryo.register(ReadGroupFragmentStatistics.class, new ReadGroupFragmentStatistics.Serializer());
         }
     }
 }

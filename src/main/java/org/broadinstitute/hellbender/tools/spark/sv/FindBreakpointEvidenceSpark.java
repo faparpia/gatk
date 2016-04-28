@@ -1,5 +1,6 @@
 package org.broadinstitute.hellbender.tools.spark.sv;
 
+import com.esotericsoftware.kryo.DefaultSerializer;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
@@ -11,6 +12,7 @@ import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.serializer.KryoRegistrator;
+import org.apache.xerces.xni.QName;
 import org.broadinstitute.hellbender.cmdline.Argument;
 import org.broadinstitute.hellbender.cmdline.CommandLineProgramProperties;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
@@ -353,6 +355,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     }
 
     /** helper class for calculating mean template length */
+    @DefaultSerializer(ReadCountAndLength.Serializer.class)
     private static final class ReadCountAndLength implements Serializable {
         private static final long serialVersionUID = 1L;
         private final long count;
@@ -381,7 +384,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
 
         public long getMeanLength() { return count != 0 ? length/count : 0; }
 
-        private static final class Serializer extends com.esotericsoftware.kryo.Serializer<ReadCountAndLength> {
+        public static final class Serializer extends com.esotericsoftware.kryo.Serializer<ReadCountAndLength> {
             @Override
             public void write( final Kryo kryo, final Output output, final ReadCountAndLength readCountAndLength ) {
                 readCountAndLength.serialize(kryo, output);
@@ -486,6 +489,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     /**
      * Minimalistic simple interval.
      */
+    @DefaultSerializer(Interval.Serializer.class)
     private static final class Interval {
         private final int contig;
         private final int start;
@@ -523,7 +527,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             return new Interval(contig, Math.min(this.start, that.start), Math.max(this.end, that.end));
         }
 
-        private static final class Serializer extends com.esotericsoftware.kryo.Serializer<Interval> {
+        public static final class Serializer extends com.esotericsoftware.kryo.Serializer<Interval> {
             @Override
             public void write( final Kryo kryo, final Output output, final Interval interval ) {
                 interval.serialize(kryo, output);
@@ -575,6 +579,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
      * Note:  hashCode does not depend on intervalId, and that's on purpose.
      * This is actually a compacted (K,V) pair, and the hashCode is on K only.
      */
+    @DefaultSerializer(QNameAndInterval.Serializer.class)
     private static final class QNameAndInterval implements Serializable {
         private static final long serialVersionUID = 1L;
         private final byte[] qName;
@@ -620,7 +625,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
 
         public String toString() { return new String(qName)+" "+intervalId; }
 
-        private static final class Serializer extends com.esotericsoftware.kryo.Serializer<QNameAndInterval> {
+        public static final class Serializer extends com.esotericsoftware.kryo.Serializer<QNameAndInterval> {
             @Override
             public void write( final Kryo kryo, final Output output, final QNameAndInterval qNameAndInterval ) {
                 qNameAndInterval.serialize(kryo, output);
@@ -676,6 +681,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
      * Note:  hashCode is not overridden, and thus does not depend on intervalId, and that's on purpose.
      * This is actually a compacted (K,V) pair, and the hashCode is on K only.
      */
+    @DefaultSerializer(KmerCountAndInterval.Serializer.class)
     private final static class KmerCountAndInterval extends SVKmer {
         private final int intervalId;
         private int count;
@@ -720,7 +726,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
 
         public String toString() { return toString(SVConstants.KMER_SIZE)+" "+intervalId+" "+count; }
 
-        private static final class Serializer extends com.esotericsoftware.kryo.Serializer<KmerCountAndInterval> {
+        public static final class Serializer extends com.esotericsoftware.kryo.Serializer<KmerCountAndInterval> {
             @Override
             public void write( final Kryo kryo, final Output output, final KmerCountAndInterval kmerCountAndInterval) {
                 kmerCountAndInterval.serialize(kryo, output);
@@ -900,25 +906,6 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                     new FastqRecord(readName, read.getBasesString(), null, ReadUtils.getBaseQualityString(read));
             intervalIds.stream().forEach(intervalId -> readTuples.add(new Tuple2<>(intervalId, fastqRecord)));
             return readTuples.iterator();
-        }
-    }
-
-    /** helper to register all the serializable data types with Kryo */
-    public static final class Registrator implements KryoRegistrator {
-        @Override
-        public void registerClasses( final Kryo kryo ) {
-            new GATKRegistrator().registerClasses(kryo);
-            new BreakpointEvidence.Registrator().registerClasses(kryo);
-            new SVKmer.Registrator().registerClasses(kryo);
-            new ReadMetadata.Registrator().registerClasses(kryo);
-            new HopscotchHashSet.Registrator().registerClasses(kryo);
-            kryo.register(Object[].class);
-            kryo.register(java.util.ArrayList.class);
-            kryo.register(htsjdk.samtools.fastq.FastqRecord.class);
-            kryo.register(ReadCountAndLength.class, new ReadCountAndLength.Serializer());
-            kryo.register(Interval.class, new Interval.Serializer());
-            kryo.register(QNameAndInterval.class, new QNameAndInterval.Serializer());
-            kryo.register(KmerCountAndInterval.class, new KmerCountAndInterval.Serializer());
         }
     }
 }
