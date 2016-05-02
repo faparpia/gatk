@@ -6,18 +6,13 @@ import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.google.cloud.dataflow.sdk.options.PipelineOptions;
 import htsjdk.samtools.*;
-import htsjdk.samtools.fastq.BasicFastqWriter;
-import htsjdk.samtools.fastq.FastqRecord;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.broadcast.Broadcast;
-import org.apache.spark.serializer.KryoRegistrator;
-import org.apache.xerces.xni.QName;
 import org.broadinstitute.hellbender.cmdline.Argument;
 import org.broadinstitute.hellbender.cmdline.CommandLineProgramProperties;
 import org.broadinstitute.hellbender.cmdline.StandardArgumentDefinitions;
 import org.broadinstitute.hellbender.cmdline.programgroups.SparkProgramGroup;
-import org.broadinstitute.hellbender.engine.spark.GATKRegistrator;
 import org.broadinstitute.hellbender.engine.spark.GATKSparkTool;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.tools.spark.utils.HopscotchHashSet;
@@ -106,17 +101,17 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     }
 
     // write a FASTQ file for an assembly
-    private void writeFastq( final Tuple2<Integer, Iterable<FastqRecord>> intervalReads, final String outputDir ) {
+    private void writeFastq( final Tuple2<Integer, Iterable<byte[]>> intervalReads, final String outputDir ) {
         final String fileName = outputDir + "/assembly" + intervalReads._1 + ".fastq";
         // necessary useless variable to resolve which overload of BucketUtils.createFile we want
         final PipelineOptions popts = null;
         // can't use the factory, because it doesn't know about hdfs or googly buckets
-        try ( final BasicFastqWriter writer =
-                      new BasicFastqWriter(
-                              new PrintStream(
-                                      new BufferedOutputStream(
-                                              BucketUtils.createFile(fileName, popts)))) ) {
-            intervalReads._2.forEach(writer::write);
+        try ( final OutputStream writer = new BufferedOutputStream(BucketUtils.createFile(fileName, popts)) ) {
+            for ( final byte[] fastqRecord : intervalReads._2 ) {
+                writer.write(fastqRecord);
+            }
+        } catch ( final IOException ioe ) {
+            throw new GATKException("Can't write "+fileName, ioe);
         }
     }
 
@@ -133,6 +128,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         // given a set of template names with interval IDs and a kill set of genomically ubiquitous kmers,
         // produce a set of interesting kmers for each interval ID
         final JavaRDD<GATKRead> unfilteredReads = getUnfilteredReads();
+        final int nPartitions = unfilteredReads.partitions().size();
         final List<KmerCountAndInterval> kmerIntervals =
                 unfilteredReads
                         .filter(read -> !read.isDuplicate() && !read.failsVendorQualityCheck() &&
@@ -140,7 +136,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                         .mapPartitions(readItr ->
                                 new QNameKmerizer(broadcastQNameAndIntervalsSet.value(),
                                                     broadcastKmerKillSet.value()).call(readItr), false)
-                        .distinct()
+                        .repartition(nPartitions)
                         .mapPartitions(kmerItr -> new KmerCleaner().call(kmerItr))
                         .collect();
 
@@ -874,17 +870,17 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
      * a multi-map of SVKmers onto intervalIds.
      */
     private static final class ReadsForIntervalFinder
-            implements Function<GATKRead, Iterator<Tuple2<Integer, FastqRecord>>> {
+            implements Function<GATKRead, Iterator<Tuple2<Integer, byte[]>>> {
         private final HopscotchHashSet<KmerCountAndInterval> kmerCountAndIntervalSet;
         private final Set<Integer> intervalIds = new HashSet<>();
-        private final List<Tuple2<Integer, FastqRecord>> readTuples = new ArrayList<>();
-        private final Iterator<Tuple2<Integer, FastqRecord>> noReads = Collections.emptyIterator();
+        private final List<Tuple2<Integer, byte[]>> readTuples = new ArrayList<>();
+        private final Iterator<Tuple2<Integer, byte[]>> noReads = Collections.emptyIterator();
 
         ReadsForIntervalFinder(final HopscotchHashSet<KmerCountAndInterval> kmerCountAndIntervalSet) {
             this.kmerCountAndIntervalSet = kmerCountAndIntervalSet;
         }
 
-        public Iterator<Tuple2<Integer, FastqRecord>> apply(final GATKRead read) {
+        public Iterator<Tuple2<Integer, byte[]>> apply(final GATKRead read) {
             intervalIds.clear();
             SVKmerizer.stream(read.getBases(), SVConstants.KMER_SIZE)
                     .map( kmer -> kmer.canonical(SVConstants.KMER_SIZE) )
@@ -902,9 +898,12 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             readTuples.clear();
             String readName = read.getName();
             if ( read.isPaired() ) readName += read.isFirstOfPair() ? "/1" : "/2";
-            final FastqRecord fastqRecord =
-                    new FastqRecord(readName, read.getBasesString(), null, ReadUtils.getBaseQualityString(read));
-            intervalIds.stream().forEach(intervalId -> readTuples.add(new Tuple2<>(intervalId, fastqRecord)));
+            final String fastqRecord = "@" + readName + "\n" +
+                    read.getBasesString() + "\n" +
+                    "+\n" +
+                    ReadUtils.getBaseQualityString(read)+"\n";
+            final byte[] fastqBytes = fastqRecord.getBytes();
+            intervalIds.stream().forEach(intervalId -> readTuples.add(new Tuple2<>(intervalId, fastqBytes)));
             return readTuples.iterator();
         }
     }

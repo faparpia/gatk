@@ -1,5 +1,6 @@
 package org.broadinstitute.hellbender.tools.spark.sv;
 
+import com.google.common.annotations.VisibleForTesting;
 import htsjdk.samtools.CigarElement;
 import htsjdk.samtools.CigarOperator;
 import org.broadinstitute.hellbender.utils.read.GATKRead;
@@ -14,8 +15,8 @@ import java.util.function.Function;
  * Figures out what kind of BreakpointEvidence, if any, a read represents.
  */
 public class ReadClassifier implements Function<GATKRead, Iterator<BreakpointEvidence>> {
-    private static final int MIN_SOFT_CLIP_LEN = 30; // minimum length of an interesting soft clip
-    private static final int MIN_INDEL_LEN = 40; // minimum length of an interesting indel
+    @VisibleForTesting static final int MIN_SOFT_CLIP_LEN = 30; // minimum length of an interesting soft clip
+    @VisibleForTesting static final int MIN_INDEL_LEN = 40; // minimum length of an interesting indel
     private static final byte MIN_QUALITY = 15; // minimum acceptable quality in a soft-clip window
     //private static final float MIN_ZISH_SCORE = -4.f;
     //private static final float MAX_ZISH_SCORE = 6.f;
@@ -91,8 +92,7 @@ public class ReadClassifier implements Function<GATKRead, Iterator<BreakpointEvi
                 if ( op == CigarOperator.INSERTION ) {
                     evidenceList.add(new BreakpointEvidence.LargeIndel(read, readMetadata, locus));
                 } else if ( op == CigarOperator.DELETION ) {
-                    evidenceList.add(new BreakpointEvidence.LargeIndel(read, readMetadata, locus));
-                    evidenceList.add(new BreakpointEvidence.LargeIndel(read, readMetadata, locus+ele.getLength()));
+                    evidenceList.add(new BreakpointEvidence.LargeIndel(read, readMetadata, locus+ele.getLength()/2));
                 }
             }
             if ( op.consumesReferenceBases() ) {
