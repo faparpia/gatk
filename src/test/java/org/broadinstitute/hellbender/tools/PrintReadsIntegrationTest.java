@@ -218,4 +218,50 @@ public final class PrintReadsIntegrationTest extends CommandLineProgramTest{
             }
         }
     }
+
+    @DataProvider(name="ReadFilterTestData")
+    public Object[][] testReadFilterData() {
+        return new Object[][]{
+//                {"print_reads.sam", null, ".sam", Arrays.asList("--RF", "Readname", "--readName", "sampleReadName"), null}
+                {"print_reads.sam", null, ".sam", Arrays.asList("--RF", "allowAll"), null}
+
+        };
+    }
+
+    @Test(dataProvider = "ReadFilterTestData")
+    public void testReadFilter(
+            final String input,
+            final String reference,
+            final String extOut,
+            final List<String> filters,
+            final List<String> expectedReadNames )
+    {
+        final File outFile = createTempFile("testReadFilter", extOut);
+
+        final ArgumentsBuilder args = new ArgumentsBuilder();
+        args.add("-I"); args.add(new File(TEST_DATA_DIR, input).getAbsolutePath());
+        args.add("-O"); args.add(outFile.getAbsolutePath());
+        if ( reference != null ) {
+            args.add("-R"); args.add(reference);
+        }
+        for (final String filter : filters) {
+            args.add(filter);
+        }
+
+        runCommandLine(args);
+
+//        try ( final ReadsDataSource outputReadsSource = new ReadsDataSource(outFile) ) {
+//            final List<GATKRead> actualReads = new ArrayList<>();
+//            for ( final GATKRead read : outputReadsSource ) {
+//                actualReads.add(read);
+//            }
+//
+//            Assert.assertEquals(actualReads.size(), expectedReadNames.size(), "Wrong number of reads output");
+//
+//            for ( int readNumber = 0; readNumber < actualReads.size(); ++readNumber ) {
+//                Assert.assertEquals(actualReads.get(readNumber).getName(), expectedReadNames.get(readNumber), "Unexpected read name");
+//            }
+//        }
+    }
+
 }

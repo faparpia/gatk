@@ -1,6 +1,7 @@
 package org.broadinstitute.hellbender.engine.filters;
 
 import htsjdk.samtools.SAMFileHeader;
+import org.broadinstitute.hellbender.cmdline.ReadFilterArgument;
 import org.broadinstitute.hellbender.utils.read.GATKRead;
 
 /**
@@ -8,6 +9,10 @@ import org.broadinstitute.hellbender.utils.read.GATKRead;
  * to errors downstream. If a read passes this filter, the rest of the hellbender engine should be able to process it without
  * blowing up.
  */
+@ReadFilterArgument(
+        fullName = "Wellformed",
+        shortName  = "wf"
+)
 public final class WellformedReadFilter implements ReadFilter {
     private static final long serialVersionUID = 1l;
 

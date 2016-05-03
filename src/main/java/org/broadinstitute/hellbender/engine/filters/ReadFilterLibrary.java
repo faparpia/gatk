@@ -1,19 +1,33 @@
 package org.broadinstitute.hellbender.engine.filters;
 
 import htsjdk.samtools.Cigar;
+import org.broadinstitute.hellbender.cmdline.ReadFilterArgument;
 import org.broadinstitute.hellbender.utils.QualityUtils;
 import org.broadinstitute.hellbender.utils.read.CigarUtils;
+
+import java.util.HashMap;
 
 /**
  * Standard ReadFilters
  */
 public final class ReadFilterLibrary {
 
-    private ReadFilterLibrary(){ /*no instance*/ }
+    private static HashMap<String, ReadFilter> filterMap = new HashMap();
+
+    public ReadFilterLibrary() {
+        addFilter("allowAll", ALLOW_ALL_READS);
+        //TODO add the rest
+    }
+
+    private static void addFilter(final String filterName, final ReadFilter rf) {
+        filterMap.put(filterName, rf);
+    }
+
+    public ReadFilter getFilter(final String filterName) { return filterMap.get(filterName); }
 
     public static final ReadFilter ALLOW_ALL_READS = read -> true;
 
-    public static final ReadFilter MAPPED =  read -> ! read.isUnmapped();
+    public static final ReadFilter MAPPED = read -> ! read.isUnmapped();
     public static final ReadFilter PRIMARY_ALIGNMENT = read -> ! read.isSecondaryAlignment();
     public static final ReadFilter NOT_DUPLICATE = read -> ! read.isDuplicate();
     public static final ReadFilter PASSES_VENDOR_QUALITY_CHECK = read -> ! read.failsVendorQualityCheck();

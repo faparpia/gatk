@@ -1,5 +1,6 @@
 package org.broadinstitute.hellbender.engine;
 
+import org.broadinstitute.hellbender.cmdline.argumentcollections.ReadFilterArgumentCollection;
 import org.broadinstitute.hellbender.engine.filters.WellformedReadFilter;
 import org.broadinstitute.hellbender.utils.SimpleInterval;
 import org.broadinstitute.hellbender.cmdline.Argument;
@@ -106,7 +107,13 @@ public abstract class ReadWalker extends GATKTool {
      * Multiple filters can be composed by using {@link org.broadinstitute.hellbender.engine.filters.ReadFilter} composition methods.
      */
     public CountingReadFilter makeReadFilter(){
-          return new CountingReadFilter("Wellformed", new WellformedReadFilter(getHeaderForReads()));
+        ReadFilterArgumentCollection readFilterArgumentCollection = readArguments.getReadFilterArgumentCollection();
+        if (null == readFilterArgumentCollection) {
+            return new CountingReadFilter("Wellformed", new WellformedReadFilter(getHeaderForReads()));
+        }
+        else {
+            return readFilterArgumentCollection.getAggregateReadFilter((name, filter) -> new CountingReadFilter(name, filter));
+        }
     }
 
     /**
