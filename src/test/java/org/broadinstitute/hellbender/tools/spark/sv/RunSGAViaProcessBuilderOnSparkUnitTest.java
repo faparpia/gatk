@@ -26,17 +26,17 @@ import java.util.*;
 /**
  * To make this test runnable, "-DPath.To.SGA" should be set properly.
  */
-// TODO: a caveat that despite exact same inputs and outputs for all previous steps before sga overlap,
-//   the final assembled contigs, run on Broad gsa machines and on travis, will give "slightly" different results
-//   so we're testing on a slightly less stringent level: that is,
-//   assembled contigs are allowed to be a certain edit distance away from the expected contigs.
+// TODO: investigate why SGA, run with exactly the same parameters on the same machine, yields slightly different results: either SNP between the contigs or slightly different contig lengths
 // TODO: test if error messages are handled correctly
 public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTest {
 
     private static final Path sgaPath = getSGAPath();
     private static Path getSGAPath(){
         String s = System.getProperty("Path.To.SGA");
-        return s == null ? (null==(s=System.getenv("Path.To.SGA")) ? null : Paths.get(s)) : Paths.get(s);
+        if(null==s){
+            s = System.getenv("Path.To.SGA");
+        }
+        return (null==s) ? null : Paths.get(s);
     }
 
     private static final SGAModule indexer = new SGAModule("index");
