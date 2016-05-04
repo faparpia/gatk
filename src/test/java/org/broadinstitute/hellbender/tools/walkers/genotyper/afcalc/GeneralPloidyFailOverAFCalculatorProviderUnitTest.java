@@ -51,14 +51,10 @@
 
 package org.broadinstitute.hellbender.tools.walkers.genotyper.afcalc;
 
-import org.broadinstitute.gatk.engine.GenomeAnalysisEngine;
-import org.broadinstitute.gatk.engine.arguments.GATKArgumentCollection;
-import org.broadinstitute.gatk.engine.arguments.GenotypeCalculationArgumentCollection;
+import org.broadinstitute.hellbender.tools.walkers.genotyper.GenotypeCalculationArgumentCollection;
 import org.testng.Assert;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
-
-import java.util.*;
 
 /**
  * Tests {@link GeneralPloidyFailOverAFCalculatorProvider}
@@ -73,96 +69,40 @@ public class GeneralPloidyFailOverAFCalculatorProviderUnitTest {
         args.MAX_ALTERNATE_ALLELES = maxAltAlleles;
         args.samplePloidy = ploidy;
 
-        final GeneralPloidyFailOverAFCalculatorProvider provider = new GeneralPloidyFailOverAFCalculatorProvider(args,null);
+        final GeneralPloidyFailOverAFCalculatorProvider provider = new GeneralPloidyFailOverAFCalculatorProvider(args);
 
         final AFCalculator calculator = provider.getInstance(ploidy,maxAltAlleles);
         Assert.assertNotNull(calculator);
         final AFCalculatorImplementation implementation = AFCalculatorImplementation.fromCalculatorClass(calculator.getClass());
         Assert.assertTrue(implementation.usableForParams(ploidy,maxAltAlleles));
-        for (int i = 0; i < PLOIDIES.length; i++) {
-            for (int j = 0; j < MAX_ALT_ALLELES.length; j++) {
-                if (implementation.usableForParams(PLOIDIES[i],MAX_ALT_ALLELES[j]))
-                    Assert.assertSame(provider.getInstance(PLOIDIES[i],MAX_ALT_ALLELES[j]),calculator);
-                else                    {
-                    final AFCalculator failOver = provider.getInstance(PLOIDIES[i],MAX_ALT_ALLELES[j]);
+        for (final int PLOIDY : PLOIDIES) {
+            for (final int MAX_ALT_ALLELE : MAX_ALT_ALLELES) {
+                if (implementation.usableForParams(PLOIDY, MAX_ALT_ALLELE)) {
+                    Assert.assertSame(provider.getInstance(PLOIDY, MAX_ALT_ALLELE), calculator);
+                } else {
+                    final AFCalculator failOver = provider.getInstance(PLOIDY, MAX_ALT_ALLELE);
                     Assert.assertNotNull(failOver);
                     final AFCalculatorImplementation failOverImplementation = AFCalculatorImplementation.fromCalculatorClass(failOver.getClass());
-                    Assert.assertTrue(failOverImplementation.usableForParams(PLOIDIES[i],MAX_ALT_ALLELES[j]));
+                    Assert.assertTrue(failOverImplementation.usableForParams(PLOIDY, MAX_ALT_ALLELE));
                     Assert.assertEquals(failOverImplementation, AFCalculatorImplementation.EXACT_GENERAL_PLOIDY);
                 }
             }
         }
     }
 
-    @Test(dataProvider="threadSafeFactoryData")
-    public void testThreadSafeConstructors(final int ploidy, final int maxAltAlleles, final int cpuThreadCount, final int dataThreadCount) {
-        final GenomeAnalysisEngine toolkit = new GenomeAnalysisEngine();
-        final GATKArgumentCollection gatkArguments = new GATKArgumentCollection();
-        gatkArguments.numberOfCPUThreadsPerDataThread =cpuThreadCount;
-        gatkArguments.numberOfDataThreads = dataThreadCount;
-        toolkit.setArguments(gatkArguments);
-        final GenotypeCalculationArgumentCollection genotypeArgs = new GenotypeCalculationArgumentCollection();
-        genotypeArgs.samplePloidy = ploidy;
-        genotypeArgs.MAX_ALTERNATE_ALLELES = maxAltAlleles;
-        final AFCalculatorProvider provider = GeneralPloidyFailOverAFCalculatorProvider.createThreadSafeProvider(toolkit,genotypeArgs,null);
-        final Hashtable<Thread,AFCalculator> perThreadProvider = new Hashtable(cpuThreadCount * dataThreadCount);
-        final List<Thread> threads = new ArrayList<>();
-        // execute different threads.
-        for (int i = 0; i < cpuThreadCount; i++)
-            for (int j = 0; j < cpuThreadCount; j++) {
-                final Thread thread = new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        synchronized (perThreadProvider) {
-                            perThreadProvider.put(Thread.currentThread(), provider.getInstance(ploidy, maxAltAlleles));
-                        }
-                    }
-                });
-                thread.start();
-                threads.add(thread);
-            }
-        // wait all threads to have finished.
-        for (final Thread thread : threads)
-            try {
-                thread.join();
-            } catch (InterruptedException e) {
-                Assert.fail();
-            }
-        // check that each thread gave a different calculator.
-        final Set<AFCalculator> calculators = new HashSet<>(perThreadProvider.values());
-        Assert.assertEquals(calculators.size(),threads.size());
-    }
-
     private final static int[] PLOIDIES = new int[] { AFCalculatorImplementation.UNBOUND_PLOIDY,1,2,3,4,10 };
     private final static int[] MAX_ALT_ALLELES = new int[] { AFCalculatorImplementation.UNBOUND_ALTERNATIVE_ALLELE_COUNT,1,2,3,4,10};
-    private final static int[] CPU_THREAD_COUNT = new int[] { 1, 2, 3, 4, 10};
-    private final static int[] DATA_THREAD_COUNT = new int[] { 1, 2, 3, 4, 10};
 
     @DataProvider(name="nonThreadSafeConstructorsData")
     public Object[][] nonThreadSafeConstructorsData() {
         final Object[][] result = new Object[PLOIDIES.length * MAX_ALT_ALLELES.length][];
         int idx = 0;
-        for (int i = 0; i < PLOIDIES.length; i++) {
-            for (int j = 0; j < MAX_ALT_ALLELES.length; j++) {
-                result[idx++] = new Object[] { PLOIDIES[i], MAX_ALT_ALLELES[j]};
+        for (final int PLOIDY : PLOIDIES) {
+            for (final int MAX_ALT_ALLELE : MAX_ALT_ALLELES) {
+                result[idx++] = new Object[]{PLOIDY, MAX_ALT_ALLELE};
             }
         }
         return result;
     }
 
-    @DataProvider(name="threadSafeFactoryData")
-    public Object[][] threadSafeFactoryData() {
-        final Object[][] result = new Object[DATA_THREAD_COUNT.length * CPU_THREAD_COUNT.length * PLOIDIES.length * MAX_ALT_ALLELES.length][];
-        int idx = 0;
-        for (int i = 0; i < PLOIDIES.length; i++) {
-            for (int j = 0; j < MAX_ALT_ALLELES.length; j++) {
-                for (int k = 0; k < CPU_THREAD_COUNT.length; k++) {
-                    for (int l = 0; l < DATA_THREAD_COUNT.length; l++) {
-                        result[idx++] = new Object[]{PLOIDIES[i], MAX_ALT_ALLELES[j], CPU_THREAD_COUNT[k], DATA_THREAD_COUNT[l]};
-                    }
-                }
-            }
-        }
-        return result;
-    }
 }
