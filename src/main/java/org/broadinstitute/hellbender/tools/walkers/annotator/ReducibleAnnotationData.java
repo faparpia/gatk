@@ -1,29 +1,4 @@
-/*
-* Copyright 2012-2015 Broad Institute, Inc.
-* 
-* Permission is hereby granted, free of charge, to any person
-* obtaining a copy of this software and associated documentation
-* files (the "Software"), to deal in the Software without
-* restriction, including without limitation the rights to use,
-* copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following
-* conditions:
-* 
-* The above copyright notice and this permission notice shall be
-* included in all copies or substantial portions of the Software.
-* 
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
-* OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-* NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
-* HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-* FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
-* THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
-
-package org.broadinstitute.gatk.tools.walkers.annotator;
+package org.broadinstitute.hellbender.tools.walkers.annotator;
 
 import htsjdk.variant.variantcontext.Allele;
 
@@ -33,7 +8,7 @@ import java.util.*;
  * A class to encapsulate the raw data for classes compatible with the ReducibleAnnotation interface
  */
 public class ReducibleAnnotationData<T> {
-    protected String rawData;
+    protected final String rawData;
     protected Map<Allele, T> attributeMap;
 
     /**
@@ -41,7 +16,8 @@ public class ReducibleAnnotationData<T> {
      * @param inputData the raw data as read in from a VCF
      */
     public ReducibleAnnotationData(final String inputData) {
-        rawData = inputData; attributeMap = new HashMap<>();
+        rawData = inputData;
+        attributeMap = new HashMap<>();
         attributeMap.put(Allele.NO_CALL, null);
     }
 
@@ -56,7 +32,7 @@ public class ReducibleAnnotationData<T> {
      * @return the list of alleles for which we have raw annotation data
      */
     public List<Allele> getAlleles() {
-        List ret = new ArrayList<Allele>();
+        final List<Allele> ret = new ArrayList<>();
         ret.addAll(attributeMap.keySet());
         return ret;
     }
@@ -66,7 +42,7 @@ public class ReducibleAnnotationData<T> {
      * @param key   the allele of interest
      * @return  do we have data for the allele of interest?
      */
-    public boolean hasAttribute(Allele key) {
+    public boolean hasAttribute(final Allele key) {
         return attributeMap.containsKey(key);
     }
 
@@ -75,7 +51,7 @@ public class ReducibleAnnotationData<T> {
      * @param key the allele of interest
      * @return  data for the allele of interest
      */
-    public T getAttribute(Allele key) {
+    public T getAttribute(final Allele key) {
         return attributeMap.get(key);
     }
 
@@ -84,7 +60,7 @@ public class ReducibleAnnotationData<T> {
      * @param key   the allele of interest
      * @param value raw data corresponding to the allele of interest
      */
-    public void putAttribute(Allele key, T value) {
+    public void putAttribute(final Allele key, final T value) {
         attributeMap.put(key, value);
     }
 
@@ -92,13 +68,12 @@ public class ReducibleAnnotationData<T> {
      * Assign all of the per-allele raw data at once
      * @param inputMap  the pre-calculated per-allele data
      */
-    public void setAttributeMap(Map<Allele, T> inputMap) {
+    public void setAttributeMap(final Map<Allele, T> inputMap) {
         attributeMap = inputMap;
     }
 
     /**
      * Get the stored raw per-allele data
-     * @return
      */
     public Map<Allele, T> getAttributeMap() {return Collections.unmodifiableMap(attributeMap);}
 
