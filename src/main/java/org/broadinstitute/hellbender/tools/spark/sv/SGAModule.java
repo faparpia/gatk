@@ -16,10 +16,15 @@ public final class SGAModule extends ExternalCommandlineProgramModule {
     }
 
     @Override
+    public String getModuleName(){
+        return "sga " + moduleName;
+    }
+
+    @Override
     public List<String> initializeCommands(final Path pathToSGA) {
-        final ArrayList<String> res = new ArrayList<>();
-        res.add(pathToSGA.toString());
-        res.add(moduleName);
-        return res;
+        final ArrayList<String> result = new ArrayList<>();
+        result.add(pathToSGA.toString());
+        result.add(moduleName);
+        return result;
     }
 }
