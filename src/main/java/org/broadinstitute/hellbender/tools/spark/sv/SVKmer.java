@@ -5,7 +5,6 @@ import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.google.cloud.dataflow.sdk.options.PipelineOptions;
-import org.apache.spark.serializer.KryoRegistrator;
 import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.broadinstitute.hellbender.tools.spark.utils.HopscotchHashSet;
 import org.broadinstitute.hellbender.utils.BaseUtils;
@@ -59,12 +58,12 @@ public class SVKmer implements Comparable<SVKmer> {
 
     private SVKmer( final long valHigh, final long valLow ) { this.valHigh = valHigh; this.valLow = valLow; }
 
-    protected SVKmer( final Kryo kryo, final Input input ) {
+    private SVKmer( final Kryo kryo, final Input input ) {
         valHigh = input.readLong();
         valLow = input.readLong();
     }
 
-    protected void serialize( final Kryo kryo, final Output output ) {
+    private void serialize( final Kryo kryo, final Output output ) {
         output.writeLong(valHigh);
         output.writeLong(valLow);
     }

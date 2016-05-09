@@ -5,7 +5,6 @@ import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.google.common.annotations.VisibleForTesting;
-import org.apache.spark.serializer.KryoRegistrator;
 
 import java.util.*;
 
@@ -57,6 +56,11 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
 
     public HopscotchHashSet( final Collection<T> collection ) {
         this(collection.size());
+        addAll(collection);
+    }
+
+    public HopscotchHashSet( final Collection<T> collection, final float sizeInflator ) {
+        this((int)(collection.size()*sizeInflator));
         addAll(collection);
     }
 
@@ -390,9 +394,11 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
         buckets = (T[])new Object[capacity];
         status = new byte[capacity];
 
+        final int fixSize = size;
         for (final T entry : oldBuckets) {
             if (entry != null) insert(entry);
         }
+        size = fixSize;
     }
 
     private static int computeCapacity( final int size ) {

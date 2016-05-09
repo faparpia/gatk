@@ -49,4 +49,10 @@ public final class SVUtils {
         @Override
         public Iterator<T> iterator() { return new SingletonIterator<>(value); }
     }
+
+    public static <T> int iteratorSize( final Iterator<T> itr ) {
+        int result = 0;
+        while ( itr.hasNext() ) { result += 1; itr.next(); }
+        return result;
+    }
 }

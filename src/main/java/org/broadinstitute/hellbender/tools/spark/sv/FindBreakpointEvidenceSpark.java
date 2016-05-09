@@ -38,7 +38,8 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     private static final int MIN_MAPQ = 20;
     private static final int MIN_MATCH_LEN = 45; // minimum length of matched portion of an interesting alignment
     //private static final int MAX_FRAGMENT_LEN = 2000;
-    private static final int MAX_COVERAGE = 250;
+    private static final int MAX_COVERAGE = 1000;
+    private static final float ASSEMBLY_TO_MAPPED_SIZE_RATIO = 3.f;
 
     private static final SimpleDateFormat dateFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss ");
 
@@ -52,11 +53,14 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     @Argument(doc = "file for breakpoint intervals output", fullName = "breakpointIntervals", optional = true)
     private String intervalFile;
 
-    @Argument(doc = "file for qname intervals output", fullName = "qnameIntervals", optional = true)
-    private String qNameFile;
+    @Argument(doc = "file for mapped qname intervals output", fullName = "qnameIntervalsMapped", optional = true)
+    private String qNamesMappedFile;
 
     @Argument(doc = "file for kmer intervals output", fullName = "kmerIntervals", optional = true)
     private String kmerFile;
+
+    @Argument(doc = "file for mapped qname intervals output", fullName = "qnameIntervalsForAssembly", optional = true)
+    private String qNamesAssemblyFile;
 
     /**
      * This is a path to a file of kmers that appear too frequently in the reference to be usable as probes to localize
@@ -78,28 +82,100 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             throw new GATKException("The reads must be coordinate sorted.");
         }
 
-        // Tool proceeds through a number of RDD pipelines.  Each is broken out into a separate function, and
-        // they're Russian dolled together from the outermost to the innermost.
-        // Here's the call to the outermost pipeline:
-        generateFastqs(ctx,
-                       getHeaderForReads(),
-                       getUnfilteredReads(),
-                       new Locations(outputDir, evidenceDir, intervalFile, qNameFile, kmerFile, kmersToIgnoreFilename),
-                       getAuthenticatedGCSOptions());
+        final Locations locations =
+                new Locations(outputDir, evidenceDir, intervalFile, qNamesMappedFile, kmerFile, qNamesAssemblyFile, kmersToIgnoreFilename);
+        final PipelineOptions pipelineOptions = getAuthenticatedGCSOptions();
+        final SAMFileHeader header = getHeaderForReads();
+        final JavaRDD<GATKRead> reads = getUnfilteredReads();
+        final HopscotchHashSet<QNameAndInterval> qNamesSet;
+        if ( true ) {
+            final HopscotchHashSet<KmerAndInterval> kmerAndIntervalsSet;
+            if ( true ) {
+                final ReadMetadata readMetadata = getMetadata(header, getMeanBasesPerTemplate(reads));
+                final Broadcast<ReadMetadata> broadcastMetadata = ctx.broadcast(readMetadata);
+                final List<Interval> intervals =
+                        getIntervals(broadcastMetadata, header, reads, locations, pipelineOptions);
+                qNamesSet = getQNames(ctx, broadcastMetadata, intervals, reads, locations, pipelineOptions);
+
+                broadcastMetadata.destroy();
+            }
+            kmerAndIntervalsSet = new HopscotchHashSet<>(
+                    getKmerIntervals(ctx, qNamesSet, reads, locations, pipelineOptions));
+
+            qNamesSet.addAll(getAssemblyQNames(ctx, kmerAndIntervalsSet, reads));
+
+            if ( locations.qNamesAssemblyFile != null ) {
+                dumpQNames(locations.qNamesAssemblyFile+".2", pipelineOptions, qNamesSet);
+            }
+
+            log("Discovered "+qNamesSet.size()+" unique template names for assembly.");
+        }
+        generateFastqs(ctx, qNamesSet, reads, locations);
+    }
+
+    private static void generateFastqs( final JavaSparkContext ctx,
+                                        final HopscotchHashSet<QNameAndInterval> qNamesSet,
+                                        final JavaRDD<GATKRead> reads,
+                                        final Locations locations) {
+        final Broadcast<HopscotchHashSet<QNameAndInterval>> broadcastQNamesSet = ctx.broadcast(qNamesSet);
+        final String outputDir = locations.outputDir;
+
+        reads
+            .mapPartitionsToPair(readItr ->
+                    new MapPartitioner<>(readItr, new ReadsForQNamesFinder(broadcastQNamesSet.value())), false)
+            .groupByKey()
+            .foreach(intervalAndFastqs -> writeFastq(intervalAndFastqs, outputDir));
+
+        broadcastQNamesSet.destroy();
+        log("Wrote FASTQs for assembly.");
+    }
+
+    /** write a FASTQ file for an assembly */
+    private static void writeFastq( final Tuple2<Integer, Iterable<byte[]>> intervalAndFastqs,
+                                    final String outputDir ) {
+        final int nFastqs = SVUtils.iteratorSize(intervalAndFastqs._2.iterator());
+        final byte[][] fastqsArray = new byte[nFastqs][];
+        final Iterator<byte[]> itr = intervalAndFastqs._2.iterator();
+        for ( int idx = 0; idx != nFastqs; ++idx ) {
+            if ( !itr.hasNext() ) throw new GATKException("fastq iterator crapped out at element "+idx);
+            fastqsArray[idx] = itr.next();
+        }
+        if ( itr.hasNext() ) throw new GATKException("unexpected extra element in fastq iterator");
+
+        // since the fastq bytes start with the read name, this will interleave pairs
+        Arrays.sort(fastqsArray, FindBreakpointEvidenceSpark::compareByteArrays);
+
+        // we're not going to try to marshal PipelineOptions for now -- not sure it's a good idea, anyway
+        final PipelineOptions pipelineOptions = null;
+        final String fileName = outputDir + "/assembly" + intervalAndFastqs._1 + ".fastq";
+        try ( final OutputStream writer = new BufferedOutputStream(BucketUtils.createFile(fileName, pipelineOptions)) ) {
+            for ( final byte[] fastqBytes : fastqsArray ) {
+                writer.write(fastqBytes);
+            }
+        } catch ( final IOException ioe ) {
+            throw new GATKException("Can't write "+fileName, ioe);
+        }
+    }
+
+    private static int compareByteArrays( final byte[] arr1, final byte[] arr2 ) {
+        final int len = Math.min(arr1.length, arr2.length);
+        for ( int idx = 0; idx != len; ++idx ) {
+            final int result = Integer.compare(arr1[idx] & 0xff, arr2[idx] & 0xff);
+            if ( result != 0 ) return result;
+        }
+        return Integer.compare(arr1.length, arr2.length);
     }
 
     /**
      * Process the input reads, pulling all reads that contain kmers associated with a given breakpoint,
      * and writing those reads into a separate FASTQ for each breakpoint.
      */
-    private static void generateFastqs( final JavaSparkContext ctx,
-                                     final SAMFileHeader header,
-                                     final JavaRDD<GATKRead> reads,
-                                     final Locations locations,
-                                     final PipelineOptions pipelineOptions ) {
-        final Broadcast<HopscotchHashSet<KmerCountAndInterval>> broadcastKmerAndIntervalsSet =
-                ctx.broadcast(new HopscotchHashSet<>(getKmerIntervals(ctx, header, reads, locations, pipelineOptions)));
-        // all the significant pre-work happens here ^^^^^^^^^^^^^^^^ in getKmerIntervals
+    private static List<QNameAndInterval> getAssemblyQNames(
+            final JavaSparkContext ctx,
+            final HopscotchHashSet<KmerAndInterval> kmerAndIntervalsSet,
+            final JavaRDD<GATKRead> reads ) {
+        final Broadcast<HopscotchHashSet<KmerAndInterval>> broadcastKmerAndIntervalsSet =
+                ctx.broadcast(kmerAndIntervalsSet);
 
         final List<QNameAndInterval> qNames =
             reads
@@ -108,61 +184,40 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                                 !read.isDuplicate() && !read.failsVendorQualityCheck())
                 .mapPartitions(readItr ->
                         new MapPartitioner<>(readItr,
-                                new ReadsForIntervalFinder(broadcastKmerAndIntervalsSet.value())), false)
+                                new QNamesForKmersFinder(broadcastKmerAndIntervalsSet.value())), false)
                 .distinct()
                 .collect();
 
-        if ( locations.qNameFile != null ) {
-            dumpQNames(locations.qNameFile+".2", pipelineOptions, qNames);
-        }
+        broadcastKmerAndIntervalsSet.destroy();
 
-        log("Discovered " + qNames.size() + " template names for assembly.");
-    }
-
-    /** write a FASTQ file for an assembly */
-    private static void writeFastq( final Tuple2<Integer, Iterable<byte[]>> intervalReads,
-                                    final String outputDir ) {
-        final String fileName = outputDir + "/assembly" + intervalReads._1 + ".fastq";
-
-        // we're not going to try to marshal PipelineOptions, for now -- not sure it's a good idea, anyway
-        final PipelineOptions pipelineOptions = null;
-
-        try ( final OutputStream writer = new BufferedOutputStream(BucketUtils.createFile(fileName,pipelineOptions)) ) {
-            for ( final byte[] fastqRecord : intervalReads._2 ) {
-                writer.write(fastqRecord);
-            }
-        } catch ( final IOException ioe ) {
-            throw new GATKException("Can't write "+fileName, ioe);
-        }
+        log("Discovered " + qNames.size() + " template names among kmers.");
+        return qNames;
     }
 
     /** find kmers for each interval */
-    private static List<KmerCountAndInterval> getKmerIntervals( final JavaSparkContext ctx,
-                                                                final SAMFileHeader header,
-                                                                final JavaRDD<GATKRead> reads,
-                                                                final Locations locations,
-                                                                final PipelineOptions pipelineOptions ) {
+    private static List<KmerAndInterval> getKmerIntervals(final JavaSparkContext ctx,
+                                                          final HopscotchHashSet<QNameAndInterval> qNamesSet,
+                                                          final JavaRDD<GATKRead> reads,
+                                                          final Locations locations,
+                                                          final PipelineOptions pipelineOptions ) {
         final Broadcast<Set<SVKmer>> broadcastKmerKillSet =
                 ctx.broadcast(SVKmer.readKmersFile(locations.kmersToIgnoreFilename, pipelineOptions));
-        // a bit of work done here   ^^^^^^^^^^^^^ in readKmersFile
-
         final Broadcast<HopscotchHashSet<QNameAndInterval>> broadcastQNameAndIntervalsSet =
-                ctx.broadcast(new HopscotchHashSet<>(getQNames(ctx, header, reads, locations, pipelineOptions)));
-        //     but most of the pre-work happens here ^^^^^^^^^ in getQNames
+                ctx.broadcast(qNamesSet);
 
         // given a set of template names with interval IDs and a kill set of genomically ubiquitous kmers,
         // produce a set of interesting kmers for each interval ID
-        final int nPartitions = reads.partitions().size();
-        final List<KmerCountAndInterval> kmerIntervals =
-                reads
-                    .filter(read -> !read.isDuplicate() && !read.failsVendorQualityCheck() &&
-                            !read.isSecondaryAlignment() && !read.isSupplementaryAlignment())
-                    .mapPartitions(readItr ->
-                            new QNameKmerizer(broadcastQNameAndIntervalsSet.value(),
-                                                broadcastKmerKillSet.value()).call(readItr), false)
-                    .distinct() // this is superfluous -- i'm just forcing a shuffle
-                    .mapPartitions(kmerItr -> new KmerCleaner().call(kmerItr))
-                    .collect();
+        final List<KmerAndInterval> kmerIntervals =
+            reads
+            .filter(read -> !read.isDuplicate() && !read.failsVendorQualityCheck() &&
+                    !read.isSecondaryAlignment() && !read.isSupplementaryAlignment())
+            .mapPartitionsToPair(readItr ->
+                    new MapPartitioner<>(readItr,
+                        new QNameKmerizer(broadcastQNameAndIntervalsSet.value(),
+                                        broadcastKmerKillSet.value())), false)
+            .reduceByKey( (c1, c2) -> c1+c2 )
+            .mapPartitions(kmerItr -> new KmerCleaner().call(kmerItr))
+            .collect();
 
         broadcastQNameAndIntervalsSet.destroy();
         broadcastKmerKillSet.destroy();
@@ -171,8 +226,8 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         if ( locations.kmerFile != null ) {
             try (final OutputStreamWriter writer = new OutputStreamWriter(new BufferedOutputStream(
                     BucketUtils.createFile(locations.kmerFile, pipelineOptions)))) {
-                for (final KmerCountAndInterval kmerCountAndInterval : kmerIntervals) {
-                    writer.write(kmerCountAndInterval.toString() + "\n");
+                for (final KmerAndInterval kmerAndInterval : kmerIntervals) {
+                    writer.write(kmerAndInterval.toString() + "\n");
                 }
             } catch (final IOException ioe) {
                 throw new GATKException("Can't write kmer intervals file " + locations.kmerFile, ioe);
@@ -184,25 +239,18 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     }
 
     /** find template names for reads mapping to each interval */
-    private static List<QNameAndInterval> getQNames( final JavaSparkContext ctx,
-                                                     final SAMFileHeader header,
-                                                     final JavaRDD<GATKRead> reads,
-                                                     final Locations locations,
-                                                     final PipelineOptions pipelineOptions ) {
-        // a little pre-work here in getMetadata
-        final ReadMetadata readMetadata = getMetadata(header, reads);
-        final Broadcast<ReadMetadata> broadcastMetadata = ctx.broadcast(readMetadata);
-
-        // the substantial part of the pre-work happens here in getIntervals
-        final List<Interval> intervals = getIntervals(broadcastMetadata, header, reads,
-                                                        locations, pipelineOptions);
-        final Broadcast<List<Interval>> broadcastIntervals = ctx.broadcast(intervals);
-
-        // given a set of intervals, produce a list of template names and the ID of the interval to which it maps
-        final int meanBasesPerTemplate = readMetadata.getMeanBasesPerTemplate();
+    private static HopscotchHashSet<QNameAndInterval> getQNames( final JavaSparkContext ctx,
+                                                                 final Broadcast<ReadMetadata> broadcastMetadata,
+                                                                 final List<Interval> intervals,
+                                                                 final JavaRDD<GATKRead> reads,
+                                                                 final Locations locations,
+                                                                 final PipelineOptions pipelineOptions ) {
+        final int meanBasesPerTemplate = broadcastMetadata.value().getMeanBasesPerTemplate();
         final int maxIntervalLength = intervals.stream().mapToInt(Interval::getLength).max().orElse(0);
         final int maxQnamesPerInterval = MAX_COVERAGE*maxIntervalLength/meanBasesPerTemplate;
-        final List<QNameAndInterval> qNames =
+
+        final Broadcast<List<Interval>> broadcastIntervals = ctx.broadcast(intervals);
+        final List<QNameAndInterval> qNameAndIntervalList =
                 reads
                     .filter(read -> !read.isDuplicate() && !read.failsVendorQualityCheck() && !read.isUnmapped())
                     .mapPartitions(readItr ->
@@ -210,27 +258,27 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                                     new QNameFinder(maxQnamesPerInterval,
                                                     broadcastMetadata.value(),
                                                     broadcastIntervals.value())), false)
-                    .distinct()
                     .collect();
-
         broadcastIntervals.destroy();
-        broadcastMetadata.destroy();
+
+        final HopscotchHashSet<QNameAndInterval> qNames =
+                new HopscotchHashSet<>(qNameAndIntervalList, ASSEMBLY_TO_MAPPED_SIZE_RATIO);
 
         // remove intervals that have ridiculously high coverage -- these are mapper artifacts
         cleanQNames(qNames, intervals, meanBasesPerTemplate);
 
         // record the qnames with their interval IDs
-        if ( locations.qNameFile != null ) {
-            dumpQNames(locations.qNameFile, pipelineOptions, qNames);
+        if ( locations.qNamesMappedFile != null ) {
+            dumpQNames(locations.qNamesMappedFile, pipelineOptions, qNames);
         }
 
-        log("Discovered " + qNames.size() + " template names.");
+        log("Discovered " + qNames.size() + " mapped template names.");
         return qNames;
     }
 
     private static void dumpQNames( final String qNameFile,
                                     final PipelineOptions pipelineOptions,
-                                    final List<QNameAndInterval> qNames ) {
+                                    final Collection<QNameAndInterval> qNames ) {
         try (final OutputStreamWriter writer = new OutputStreamWriter(new BufferedOutputStream(
                 BucketUtils.createFile(qNameFile, pipelineOptions)))) {
             for (final QNameAndInterval qnameAndInterval : qNames) {
@@ -242,7 +290,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     }
 
     /** remove all qnames for intervals that have ridiculously high coverage */
-    private static void cleanQNames( final List<QNameAndInterval> qNames,
+    private static void cleanQNames( final Collection<QNameAndInterval> qNames,
                                      final List<Interval> intervals,
                                      final int meanBasesPerTemplate ) {
 
@@ -253,7 +301,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             qNamesPerInterval[qNameAndInterval.getIntervalId()] += 1;
         }
 
-        // for each interval, figure out how many qnames are too many (it depends on read length, and interval size)
+        // for each interval, figure out how many qnames are too many (it depends on read length and interval size)
         // mark the interval for deletion if the coverage is too high
         int nKilled = 0;
         for ( int idx = 0; idx != nIntervals; ++idx ) {
@@ -264,19 +312,11 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             }
         }
 
-        // eliminate the entries from deleted intervals by repacking the array with just the good ones
-        final int nNames = qNames.size();
-        int writeIdx = 0; // points just past the last good entry
-        for ( int readIdx = 0; readIdx != nNames; ++readIdx ) {
-            final QNameAndInterval qNameAndInterval = qNames.get(readIdx);
-            if ( qNamesPerInterval[qNameAndInterval.getIntervalId()] != -1 ) {
-                if ( readIdx != writeIdx ) qNames.set(writeIdx, qNameAndInterval);
-                writeIdx += 1;
-            }
-        }
-        // remove unused entries at the end of the array
-        for ( int deleteIdx = nNames-1; deleteIdx >= writeIdx; --deleteIdx ) {
-            qNames.remove(deleteIdx);
+        // remove the bad intervals
+        final Iterator<QNameAndInterval> itr = qNames.iterator();
+        while ( itr.hasNext() ) {
+            final QNameAndInterval qNameAndInterval = itr.next();
+            if ( qNamesPerInterval[qNameAndInterval.getIntervalId()] == -1 ) itr.remove();
         }
 
         log("Killed " + nKilled + " intervals that had >" + MAX_COVERAGE + "x coverage.");
@@ -362,7 +402,8 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     }
 
     /** gather some interesting factoids about the reads in aggregate */
-    private static ReadMetadata getMetadata( final SAMFileHeader header, final JavaRDD<GATKRead> reads ) {
+    private static ReadMetadata getMetadata( final SAMFileHeader header,
+                                             final int meanBasesPerTemplate ) {
         final List<SAMReadGroupRecord> groups = header.getReadGroups();
         final int nGroups = groups.size();
         final ReadMetadata.ReadGroupFragmentStatistics groupStats =
@@ -373,7 +414,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             stats.add(groupStats);
         }
         final ReadMetadata readMetadata =
-                new ReadMetadata(header, stats, groupStats, getMeanBasesPerTemplate(reads));
+                new ReadMetadata(header, stats, groupStats, meanBasesPerTemplate);
         log("Metadata retrieved.");
         return readMetadata;
     }
@@ -381,8 +422,8 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     /** mean number of sequenced bases per template (i.e., read length if unpaired, twice the read length if paired) */
     private static int getMeanBasesPerTemplate( final JavaRDD<GATKRead> reads ) {
         return reads
-                .map(read -> new ReadCountAndLength(read))
-                .reduce( (x, y) -> new ReadCountAndLength(x, y))
+                .map(ReadCountAndLength::new)
+                .reduce(ReadCountAndLength::new)
                 .getMeanLength();
     }
 
@@ -391,20 +432,23 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     }
 
     private static class Locations {
-        public String outputDir;
-        public String evidenceDir;
-        public String intervalFile;
-        public String qNameFile;
-        public String kmerFile;
-        public String kmersToIgnoreFilename;
+        public final String outputDir;
+        public final String evidenceDir;
+        public final String intervalFile;
+        public final String qNamesMappedFile;
+        public final String kmerFile;
+        public final String qNamesAssemblyFile;
+        public final String kmersToIgnoreFilename;
 
         public Locations( final String outputDir, final String evidenceDir, final String intervalFile,
-                          final String qNameFile, final String kmerFile, final String kmersToIgnoreFilename ) {
+                          final String qNamesMappedFile, final String kmerFile, final String qNamesAssemblyFile,
+                          final String kmersToIgnoreFilename ) {
             this.outputDir = outputDir;
             this.evidenceDir = evidenceDir;
             this.intervalFile = intervalFile;
-            this.qNameFile = qNameFile;
+            this.qNamesMappedFile = qNamesMappedFile;
             this.kmerFile = kmerFile;
+            this.qNamesAssemblyFile = qNamesAssemblyFile;
             this.kmersToIgnoreFilename = kmersToIgnoreFilename;
         }
     }
@@ -415,12 +459,12 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         private final long count;
         private final long length;
 
-        public ReadCountAndLength( final GATKRead read ) {
+        ReadCountAndLength( final GATKRead read ) {
             this.count = 1;
             this.length = (read.isPaired() ? 2 : 1)*read.getLength();
         }
 
-        public ReadCountAndLength( final ReadCountAndLength countNLength1, final ReadCountAndLength countNLength2 ) {
+        ReadCountAndLength( final ReadCountAndLength countNLength1, final ReadCountAndLength countNLength2 ) {
             this.count = countNLength1.count + countNLength2.count;
             this.length = countNLength1.length + countNLength2.length;
         }
@@ -548,7 +592,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         private final int start;
         private final int end;
 
-        public Interval( final int contig, final int start, final int end ) {
+        Interval( final int contig, final int start, final int end ) {
             this.contig = contig;
             this.start = start;
             this.end = end;
@@ -638,7 +682,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         private final int hashVal;
         private final int intervalId;
 
-        public QNameAndInterval( final String qName, final int intervalId ) {
+        QNameAndInterval( final String qName, final int intervalId ) {
             this.qName = qName.getBytes();
             this.hashVal = qName.hashCode();
             this.intervalId = intervalId;
@@ -670,7 +714,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         }
 
         public boolean equals( final QNameAndInterval that ) {
-            return Arrays.equals(this.qName, that.qName) && this.intervalId == that.intervalId;
+            return this.intervalId == that.intervalId && Arrays.equals(this.qName, that.qName);
         }
 
         public boolean sameName( final byte[] name ) { return Arrays.equals(qName, name); }
@@ -729,66 +773,67 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     }
 
     /**
-     * A <SVKmer,IntervalId> pair.
-     * Note:  hashCode is not overridden, and thus does not depend on count or intervalId, and that's on purpose.
-     * This is actually a compacted (K,V) pair, and the hashCode is on K only.  Equality is on kmer and intervalId,
-     * and ignores count.
+     * A <Kmer,IntervalId> pair.
+     * Note:  hashCode does not depend on intervalId, and that's on purpose.
+     * This is actually a compacted (K,V) pair, and the hashCode is on K only.
      */
-    @DefaultSerializer(KmerCountAndInterval.Serializer.class)
-    private final static class KmerCountAndInterval extends SVKmer {
+    @DefaultSerializer(KmerAndInterval.Serializer.class)
+    private final static class KmerAndInterval implements Comparable<KmerAndInterval> {
+        private final SVKmer kmer;
         private final int intervalId;
-        private int count;
 
-        public KmerCountAndInterval(final SVKmer kmer, final int intervalId ) {
-            super(kmer);
+        KmerAndInterval(final SVKmer kmer, final int intervalId ) {
+            this.kmer = kmer;
             this.intervalId = intervalId;
-            this.count = 0;
         }
 
-        private KmerCountAndInterval(final Kryo kryo, final Input input ) {
-            super(kryo, input);
+        private KmerAndInterval(final Kryo kryo, final Input input ) {
+            kmer = kryo.readObject(input, SVKmer.class);
             intervalId = input.readInt();
-            count = input.readInt();
         }
 
-        protected void serialize( final Kryo kryo, final Output output ) {
-            super.serialize(kryo, output);
+        private void serialize( final Kryo kryo, final Output output ) {
+            kryo.writeObject(output, kmer);
             output.writeInt(intervalId);
-            output.writeInt(count);
+        }
+
+        @Override
+        public int hashCode() {
+            return kmer.hashCode();
         }
 
         @Override
         public boolean equals( final Object obj ) {
-            return obj instanceof KmerCountAndInterval && equals((KmerCountAndInterval)obj);
+            return obj instanceof KmerAndInterval && equals((KmerAndInterval)obj);
         }
 
-        public boolean equals( final KmerCountAndInterval that ) {
-            return equals((SVKmer)that) && this.intervalId == that.intervalId;
+        public boolean equals( final KmerAndInterval that ) {
+            return this.kmer.equals(that.kmer) && this.intervalId == that.intervalId;
         }
 
-        public int compareTo( final KmerCountAndInterval that ) {
-            int result = compareTo((SVKmer)that);
+        @Override
+        public int compareTo( final KmerAndInterval that ) {
+            int result = this.kmer.compareTo(that.kmer);
             if ( result == 0 ) result = Integer.compare(this.intervalId, that.intervalId);
             return result;
         }
 
         public int getIntervalId() { return intervalId; }
-        public int getCount() { return count; }
-        public void incrementCount() { count += 1; }
-        public void addCount( final int countIncrement ) { count += countIncrement; }
+        public SVKmer getKmer() { return kmer; }
 
-        public String toString() { return toString(SVConstants.KMER_SIZE)+" "+intervalId+" "+count; }
+        @Override
+        public String toString() { return kmer.toString(SVConstants.KMER_SIZE)+" "+intervalId; }
 
-        public static final class Serializer extends com.esotericsoftware.kryo.Serializer<KmerCountAndInterval> {
+        public static final class Serializer extends com.esotericsoftware.kryo.Serializer<KmerAndInterval> {
             @Override
-            public void write( final Kryo kryo, final Output output, final KmerCountAndInterval kmerCountAndInterval) {
-                kmerCountAndInterval.serialize(kryo, output);
+            public void write( final Kryo kryo, final Output output, final KmerAndInterval kmerAndInterval) {
+                kmerAndInterval.serialize(kryo, output);
             }
 
             @Override
-            public KmerCountAndInterval read(final Kryo kryo, final Input input,
-                                             final Class<KmerCountAndInterval> klass ) {
-                return new KmerCountAndInterval(kryo, input);
+            public KmerAndInterval read(final Kryo kryo, final Input input,
+                                        final Class<KmerAndInterval> klass ) {
+                return new KmerAndInterval(kryo, input);
             }
         }
     }
@@ -797,39 +842,35 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
      * Class that acts as a mapper from a stream of reads to a stream of KmerAndIntervals.
      * The template names of reads to kmerize, along with a set of kmers to ignore are passed in (by broadcast).
      */
-    private static final class QNameKmerizer {
+    private static final class QNameKmerizer implements Function<GATKRead, Iterator<Tuple2<KmerAndInterval, Integer>>> {
         private final HopscotchHashSet<QNameAndInterval> qNameAndIntervalSet;
         private final Set<SVKmer> kmersToIgnore;
-        private final HopscotchHashSet<KmerCountAndInterval> kmerSet;
-        private static final int MAX_KMERS_PER_PARTITION_GUESS = 10000000;
+        private final ArrayList<Tuple2<KmerAndInterval, Integer>> tupleList = new ArrayList<>();
 
         QNameKmerizer( final HopscotchHashSet<QNameAndInterval> qNameAndIntervalSet,
                        final Set<SVKmer> kmersToIgnore ) {
             this.qNameAndIntervalSet = qNameAndIntervalSet;
             this.kmersToIgnore = kmersToIgnore;
-            this.kmerSet = new HopscotchHashSet<>(MAX_KMERS_PER_PARTITION_GUESS);
         }
 
-        public Iterable<KmerCountAndInterval> call(final Iterator<GATKRead> readItr ) {
-            while ( readItr.hasNext() ) {
-                final GATKRead read = readItr.next();
-                final String qName = read.getName();
-                final int qNameHash = qName.hashCode();
-                final byte[] qNameBytes = qName.getBytes();
-                final Iterator<QNameAndInterval> names = qNameAndIntervalSet.bucketIterator(qNameHash);
-                while ( names.hasNext() ) {
-                    final QNameAndInterval qNameAndInterval = names.next();
-                    if ( qNameAndInterval.hashCode() == qNameHash && qNameAndInterval.sameName(qNameBytes) ) {
-                        SVKmerizer.stream(read.getBases(), SVConstants.KMER_SIZE)
-                                .map(kmer -> kmer.canonical(SVConstants.KMER_SIZE))
-                                .filter(kmer -> !kmersToIgnore.contains(kmer))
-                                .map(kmer -> new KmerCountAndInterval(kmer, qNameAndInterval.getIntervalId()))
-                                .forEach(kmerCountAndInterval -> kmerSet.put(kmerCountAndInterval).incrementCount());
-                        break;
-                    }
+        public Iterator<Tuple2<KmerAndInterval, Integer>> apply( final GATKRead read ) {
+            final String qName = read.getName();
+            final int qNameHash = qName.hashCode();
+            final byte[] qNameBytes = qName.getBytes();
+            final Iterator<QNameAndInterval> names = qNameAndIntervalSet.bucketIterator(qNameHash);
+            tupleList.clear();
+            while ( names.hasNext() ) {
+                final QNameAndInterval qNameAndInterval = names.next();
+                if ( qNameAndInterval.hashCode() == qNameHash && qNameAndInterval.sameName(qNameBytes) ) {
+                    SVKmerizer.stream(read.getBases(), SVConstants.KMER_SIZE)
+                            .map(kmer -> kmer.canonical(SVConstants.KMER_SIZE))
+                            .filter(kmer -> !kmersToIgnore.contains(kmer))
+                            .map(kmer -> new KmerAndInterval(kmer, qNameAndInterval.getIntervalId()))
+                            .forEach(kmerCountAndInterval -> tupleList.add(new Tuple2<>(kmerCountAndInterval,1)));
+                    break;
                 }
             }
-            return kmerSet;
+            return tupleList.iterator();
         }
     }
 
@@ -837,30 +878,21 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
      * Eliminates dups, and removes over-represented kmers.
      */
     private static final class KmerCleaner {
-        private static final int MAX_INTERVALS = 4;
+        private static final int MAX_INTERVALS = 3;
         private static final int MIN_KMER_COUNT = 3;
         private static final int MAX_KMER_COUNT = 125;
         private static final int MAX_KMERS_PER_REHASHED_PARTITION_GUESS = 600000;
-        private final HopscotchHashSet<KmerCountAndInterval> kmerSet =
+
+        private final HopscotchHashSet<KmerAndInterval> kmerSet =
                 new HopscotchHashSet<>(MAX_KMERS_PER_REHASHED_PARTITION_GUESS);
 
-        public Iterable<KmerCountAndInterval> call(final Iterator<KmerCountAndInterval> kmerItr ) {
+        public Iterable<KmerAndInterval> call(final Iterator<Tuple2<KmerAndInterval, Integer>> kmerCountItr ) {
 
-            // build set of Kmers, Counts, and IntervalIDs
-            // where kmer and interval are equal, we coalesce by bumping the count
-            while ( kmerItr.hasNext() ) {
-                final KmerCountAndInterval kmerCountAndInterval = kmerItr.next();
-                final KmerCountAndInterval kmerCountAndInterval2 = kmerSet.put(kmerCountAndInterval);
-                if ( kmerCountAndInterval != kmerCountAndInterval2 ) {
-                    kmerCountAndInterval2.addCount(kmerCountAndInterval.getCount());
-                }
-            }
-
-            // remove all the kmers with extreme counts that probably won't help in creating a local assembly
-            final Iterator<KmerCountAndInterval> itr = kmerSet.iterator();
-            while ( itr.hasNext() ) {
-                final int kmerCount = itr.next().getCount();
-                if ( kmerCount < MIN_KMER_COUNT || kmerCount > MAX_KMER_COUNT ) itr.remove();
+            // remove kmers with low counts that probably represent sequencing errors
+            while ( kmerCountItr.hasNext() ) {
+                final Tuple2<KmerAndInterval, Integer> kmerCount = kmerCountItr.next();
+                final int count = kmerCount._2;
+                if ( count >= MIN_KMER_COUNT && count <= MAX_KMER_COUNT ) kmerSet.add(kmerCount._1);
             }
 
             // remove ubiquitous kmers that appear in too many intervals
@@ -868,17 +900,18 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             for ( int idx = 0; idx != kmerSetCapacity; ++idx ) {
                 cleanBucket(idx);
             }
+
             return kmerSet;
         }
 
         /** clean up ubiquitous kmers that hashed to some given hash bucket */
         private void cleanBucket( final int bucketIndex ) {
-            final int nKmers = getBucketSize(bucketIndex);
+            final int nKmers = SVUtils.iteratorSize(kmerSet.bucketIterator(bucketIndex));
             if ( nKmers <= MAX_INTERVALS ) return;
 
             // create an array of all the entries in the given bucket
-            final KmerCountAndInterval[] kmers = new KmerCountAndInterval[nKmers];
-            final Iterator<KmerCountAndInterval> itr = kmerSet.bucketIterator(bucketIndex);
+            final KmerAndInterval[] kmers = new KmerAndInterval[nKmers];
+            final Iterator<KmerAndInterval> itr = kmerSet.bucketIterator(bucketIndex);
             int idx = 0;
             while ( itr.hasNext() ) {
                 kmers[idx++] = itr.next();
@@ -893,10 +926,10 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             int testIdx = 1;
             while ( testIdx < nKmers ) {
                 // first kmer in the group
-                final SVKmer test = kmers[readIdx];
+                final SVKmer test = kmers[readIdx].getKmer();
 
                 // bump testIdx until the kmer changes (or we run out of entries)
-                while ( testIdx < nKmers && kmers[testIdx].equals(test) ) {
+                while ( testIdx < nKmers && test.equals(kmers[testIdx].getKmer()) ) {
                     ++testIdx;
                 }
 
@@ -911,54 +944,80 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                 testIdx += 1;
             }
         }
-
-        // really odd that there doesn't seem to be a quick, economical, non-obscure way to do this functionally
-        private int getBucketSize( final int bucketIndex ) {
-            final Iterator<KmerCountAndInterval> itr = kmerSet.bucketIterator(bucketIndex);
-            int result = 0;
-            while ( itr.hasNext() ) {
-                result += 1;
-                itr.next();
-            }
-            return result;
-        }
     }
 
     /**
      * Class that acts as a mapper from a stream of reads to a stream of <intervalId,read> pairs.
      * It knows which breakpoint(s) a read belongs to (if any) by kmerizing the read, and looking up each SVKmer in
-     * a multi-map of SVKmers onto intervalIds.
+     * a multi-map of SVKmers onto intervalId.
      */
-    private static final class ReadsForIntervalFinder
-            implements Function<GATKRead, Iterator<QNameAndInterval>> {
-        private final HopscotchHashSet<KmerCountAndInterval> kmerCountAndIntervalSet;
-        private final Set<Integer> intervalIds = new HashSet<>();
+    private static final class QNamesForKmersFinder implements Function<GATKRead, Iterator<QNameAndInterval>> {
+        private final HopscotchHashSet<KmerAndInterval> kmerAndIntervalSet;
+        private final Set<Integer> intervalIdSet = new HashSet<>();
         private final List<QNameAndInterval> qNameAndIntervalList = new ArrayList<>();
         private final Iterator<QNameAndInterval> emptyIterator = Collections.emptyIterator();
 
-        ReadsForIntervalFinder(final HopscotchHashSet<KmerCountAndInterval> kmerCountAndIntervalSet) {
-            this.kmerCountAndIntervalSet = kmerCountAndIntervalSet;
+        QNamesForKmersFinder(final HopscotchHashSet<KmerAndInterval> kmerAndIntervalSet) {
+            this.kmerAndIntervalSet = kmerAndIntervalSet;
         }
 
         public Iterator<QNameAndInterval> apply(final GATKRead read) {
-            intervalIds.clear();
+            intervalIdSet.clear();
             SVKmerizer.stream(read.getBases(), SVConstants.KMER_SIZE)
                     .map( kmer -> kmer.canonical(SVConstants.KMER_SIZE) )
                     .forEach( kmer -> {
-                        final Iterator<KmerCountAndInterval> itr =
-                                kmerCountAndIntervalSet.bucketIterator(kmer.hashCode());
+                        final Iterator<KmerAndInterval> itr = kmerAndIntervalSet.bucketIterator(kmer.hashCode());
                         while ( itr.hasNext() ) {
-                            final KmerCountAndInterval kmerCountAndInterval = itr.next();
-                            if (kmer.equals(kmerCountAndInterval)) {
-                                intervalIds.add(kmerCountAndInterval.getIntervalId());
+                            final KmerAndInterval kmerAndInterval = itr.next();
+                            if (kmer.equals(kmerAndInterval.getKmer())) {
+                                intervalIdSet.add(kmerAndInterval.getIntervalId());
                             }
                         }
                     });
-            if (intervalIds.isEmpty()) return emptyIterator;
+            if (intervalIdSet.isEmpty()) return emptyIterator;
             qNameAndIntervalList.clear();
-            String qName = read.getName();
-            intervalIds.stream().forEach(intervalId -> qNameAndIntervalList.add(new QNameAndInterval(qName, intervalId)));
+            final String qName = read.getName();
+            intervalIdSet.stream().forEach(intervalId -> qNameAndIntervalList.add(new QNameAndInterval(qName, intervalId)));
             return qNameAndIntervalList.iterator();
+        }
+    }
+
+    /**
+     * Find <intervalId,fastqBytes> pairs for interesting template names.
+     */
+    private static final class ReadsForQNamesFinder
+            implements Function<GATKRead, Iterator<Tuple2<Integer, byte[]>>> {
+        private final HopscotchHashSet<QNameAndInterval> qNamesSet;
+        private final List<Tuple2<Integer, byte[]>> fastQRecords = new ArrayList<>();
+
+        ReadsForQNamesFinder( final HopscotchHashSet<QNameAndInterval> qNamesSet ) {
+            this.qNamesSet = qNamesSet;
+        }
+
+        public Iterator<Tuple2<Integer, byte[]>> apply( final GATKRead read ) {
+            final String readName = read.getName();
+            final int readNameHash = readName.hashCode();
+            final byte[] readNameBytes = readName.getBytes();
+            final Iterator<QNameAndInterval> namesItr = qNamesSet.bucketIterator(readNameHash);
+            byte[] fastqBytes = null;
+            fastQRecords.clear();
+            while ( namesItr.hasNext() ) {
+                final QNameAndInterval nameAndInterval = namesItr.next();
+                if ( nameAndInterval.hashCode() == readNameHash && nameAndInterval.sameName(readNameBytes) ) {
+                    if ( fastqBytes == null ) fastqBytes = fastqForRead(read).getBytes();
+                    fastQRecords.add(new Tuple2<>(nameAndInterval.getIntervalId(), fastqBytes));
+                }
+            }
+            return fastQRecords.iterator();
+        }
+
+        private String fastqForRead( final GATKRead read ) {
+            final String nameSuffix = read.isPaired() ? (read.isFirstOfPair() ? "/1" : "/2") : "";
+            final String mappedLocation = read.isUnmapped() ? "*" : read.getContig()+":"+read.getStart();
+            return "@" + read.getName() + nameSuffix + "@" + mappedLocation + "\n" +
+                    read.getBasesString() + "\n" +
+                    "+\n" +
+                    ReadUtils.getBaseQualityString(read)+"\n";
         }
     }
 }
