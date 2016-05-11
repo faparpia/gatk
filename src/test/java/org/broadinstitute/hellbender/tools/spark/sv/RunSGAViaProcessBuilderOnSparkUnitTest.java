@@ -42,7 +42,8 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
     private static Map<Long, URI> expectedAssembledFASTAFiles;
 
     // parameter block
-    private static final int editDistanceTolerance = 2; // tolerance of the summed edit distance between expected contigs and corresponding actual assembled contigs
+    private static final int lengthDiffTolerance = 1;   // tolerance on how much of a difference can each pair of assembled contigs (actual vs expected) length could be
+    private static final int editDistanceTolerance = 3; // tolerance of the summed edit distance between expected contigs and corresponding actual assembled contigs
 
     private static final int threads = 1;
 
@@ -191,40 +192,56 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
         final SortedMap<Integer, String> actualMap = collectContigsByLength(actualAssembledContigs);
 
 
-        // first compare contig length values
-        final SortedSet<Integer> actualLengthVacs = new TreeSet<>(actualMap.keySet());
+        // essentially, make sure the number of assembled contigs with unique length values are the same
+        final SortedSet<Integer> actualLengthVals = new TreeSet<>(actualMap.keySet());
         final SortedSet<Integer> expectedLengthVals = new TreeSet<>(expectedMap.keySet());
-        Assert.assertEquals(actualLengthVacs, expectedLengthVals);
+        Assert.assertEquals(actualLengthVals.size(), expectedLengthVals.size());
+
+        // first compare contig length values, with some tolerance
+        final Iterator<Integer> itActual = actualLengthVals.iterator();
+        final Iterator<Integer> itExpected = expectedLengthVals.iterator();
+        // if the two sets are not exactly the same but difference is within tolerance, create new map
+        final List<Tuple2<String, String>> actualVSexpectedPairs = new ArrayList<>();
+        while(itActual.hasNext()){
+            final Integer actualLength = itActual.next();
+            final Integer expectedLength = itExpected.next(); // safe operation as the previous assertion guarantees two sets are of same size
+            Assert.assertTrue( Math.abs(actualLength - expectedLength)<=lengthDiffTolerance );
+            actualVSexpectedPairs.add(new Tuple2<>(actualMap.get(actualLength), expectedMap.get(expectedLength)));
+        }
 
         // then compare sequences, aware of RC
-        for(final Integer l : actualLengthVacs){
+        for(final Tuple2<String, String> pairOfSimilarLength: actualVSexpectedPairs){
 
-            boolean sequencesAreTheSame = false;
-            boolean sequencesAreCloseEnough = false;
+            final String actualString = pairOfSimilarLength._1();
+            final String expectedString = pairOfSimilarLength._2();
 
-            final String actualString = actualMap.get(l);
-            final String expectedString = expectedMap.get(l);
             final String rcOfActualString = new String(BaseUtils.simpleReverseComplement(actualString.getBytes(StandardCharsets.UTF_8)));
 
             final int dist = StringUtils.getLevenshteinDistance(actualString, expectedString);
             final int rcDist = StringUtils.getLevenshteinDistance(rcOfActualString, expectedString);
+
+            boolean sequencesAreTheSame = false;
+            boolean sequencesAreCloseEnough = false;
+
+            final int minDist = (dist < rcDist ? dist : rcDist);
 
             if(actualString.equals(expectedString) || rcOfActualString.equals(expectedString)){
                 sequencesAreCloseEnough = sequencesAreTheSame = true;
             }else{
                 // two things: the unit test tests if sequences are similar enough to each other
                 // but if the minimum edit distance is different, we want to see which one it is.
-                final int minDist = (dist < rcDist ? dist : rcDist);
                 sequencesAreCloseEnough = (minDist <= editDistanceTolerance);
                 if(0!=minDist){
                     System.err.println("Contig that has nonzero edit distance is of length " + Integer.toString(actualString.length()) +
-                                        "\nactual sequence: " + actualString +
-                                        "\nreverse complement of actual sequence: " + rcOfActualString +
-                                        "\nexpected sequence" + expectedString);
+                            "\nactual sequence: " + actualString +
+                            "\nreverse complement of actual sequence: " + rcOfActualString +
+                            "\nexpected sequence: " + expectedString);
                 }
             }
 
-            Assert.assertTrue(sequencesAreTheSame || sequencesAreCloseEnough);
+            Assert.assertTrue(sequencesAreTheSame || sequencesAreCloseEnough,
+                              "Culprit contigs (expected, actual) of length: " + String.valueOf(expectedString.length()) + ", " + String.valueOf(actualString.length()) +
+                              "With edit distance " + String.valueOf(minDist));
         }
     }
 
@@ -250,7 +267,7 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
         return FilenameUtils.getBaseName(actualFile.getName()) + ".fa";
     }
 
-    // utility function: for extracting read names and sequences from a fastq file
+    // utility function: for extracting read names and sequences from a fastq/fasta file
     private static void extractNamesAndSeqFromFASTQ(final File FASTAFile, final boolean fastqFilesWellFormed, List<String> readNames, List<String> sequences) throws IOException{
 
         if(fastqFilesWellFormed){
