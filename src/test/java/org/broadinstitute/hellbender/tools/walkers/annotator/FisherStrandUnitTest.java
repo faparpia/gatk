@@ -2,7 +2,12 @@ package org.broadinstitute.hellbender.tools.walkers.annotator;
 
 import htsjdk.samtools.Cigar;
 import htsjdk.samtools.TextCigarCodec;
-import htsjdk.variant.variantcontext.*;
+import htsjdk.variant.variantcontext.Allele;
+import htsjdk.variant.variantcontext.Genotype;
+import htsjdk.variant.variantcontext.GenotypeBuilder;
+import htsjdk.variant.variantcontext.GenotypesContext;
+import htsjdk.variant.variantcontext.VariantContext;
+import htsjdk.variant.variantcontext.VariantContextBuilder;
 import org.broadinstitute.hellbender.utils.QualityUtils;
 import org.broadinstitute.hellbender.utils.genotyper.PerReadAlleleLikelihoodMap;
 import org.broadinstitute.hellbender.utils.read.ArtificialReadUtils;
@@ -13,7 +18,11 @@ import org.testng.Assert;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -40,6 +49,15 @@ public final class FisherStrandUnitTest {
         //[1] 5.919091e-13
 
         final List<Object[]> tests = new ArrayList<>();
+        tests.add(new Object[]{9,11,12,10,                     0.7578618});
+        tests.add(new Object[]{12,10,9,11,                     0.7578618});
+        tests.add(new Object[]{9,10,12,10,                     0.7578618});
+        tests.add(new Object[]{9,10,12,10,                     0.7578618});
+        tests.add(new Object[]{9,9,12,10,                      1.0});
+        tests.add(new Object[]{9,13,12,10,                     0.5466948});
+        tests.add(new Object[]{12,10,9,13,                     0.5466948});
+        tests.add(new Object[]{9,12,11,9,                      0.5377362});
+
         tests.add(new Object[]{0, 0, 0, 0,                     1.0});
         tests.add(new Object[]{100000, 100000, 100000, 100000, 1.0}  );
         tests.add(new Object[]{0, 0, 100000, 100000,           1.0});
@@ -197,4 +215,6 @@ public final class FisherStrandUnitTest {
         Assert.assertNull(fs.annotate(null, when(mock(VariantContext.class).isVariant()).thenReturn(false).getMock(), null));
 
     }
+
+
 }
