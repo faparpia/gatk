@@ -2,8 +2,6 @@ package org.broadinstitute.hellbender.tools.spark.sv;
 
 import com.google.common.base.Throwables;
 import org.apache.commons.io.FileUtils;
-import scala.Tuple3;
-import scala.tools.nsc.Global;
 
 import java.io.*;
 import java.nio.charset.Charset;
