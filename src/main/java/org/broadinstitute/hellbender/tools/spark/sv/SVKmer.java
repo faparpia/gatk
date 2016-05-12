@@ -58,12 +58,12 @@ public class SVKmer implements Comparable<SVKmer> {
 
     private SVKmer( final long valHigh, final long valLow ) { this.valHigh = valHigh; this.valLow = valLow; }
 
-    private SVKmer( final Kryo kryo, final Input input ) {
+    protected SVKmer( final Kryo kryo, final Input input ) {
         valHigh = input.readLong();
         valLow = input.readLong();
     }
 
-    private void serialize( final Kryo kryo, final Output output ) {
+    protected void serialize( final Kryo kryo, final Output output ) {
         output.writeLong(valHigh);
         output.writeLong(valLow);
     }

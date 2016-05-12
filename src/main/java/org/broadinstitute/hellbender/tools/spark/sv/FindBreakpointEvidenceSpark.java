@@ -39,7 +39,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     private static final int MIN_MATCH_LEN = 45; // minimum length of matched portion of an interesting alignment
     //private static final int MAX_FRAGMENT_LEN = 2000;
     private static final int MAX_COVERAGE = 1000;
-    private static final float ASSEMBLY_TO_MAPPED_SIZE_RATIO = 3.f;
+    private static final float ASSEMBLY_TO_MAPPED_SIZE_RATIO = 7.f;
 
     private static final SimpleDateFormat dateFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss ");
 
@@ -105,7 +105,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             qNamesSet.addAll(getAssemblyQNames(ctx, kmerAndIntervalsSet, reads));
 
             if ( locations.qNamesAssemblyFile != null ) {
-                dumpQNames(locations.qNamesAssemblyFile+".2", pipelineOptions, qNamesSet);
+                dumpQNames(locations.qNamesAssemblyFile, pipelineOptions, qNamesSet);
             }
 
             log("Discovered "+qNamesSet.size()+" unique template names for assembly.");
@@ -778,28 +778,22 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
      * This is actually a compacted (K,V) pair, and the hashCode is on K only.
      */
     @DefaultSerializer(KmerAndInterval.Serializer.class)
-    private final static class KmerAndInterval implements Comparable<KmerAndInterval> {
-        private final SVKmer kmer;
+    private final static class KmerAndInterval extends SVKmer {
         private final int intervalId;
 
         KmerAndInterval(final SVKmer kmer, final int intervalId ) {
-            this.kmer = kmer;
+            super(kmer);
             this.intervalId = intervalId;
         }
 
         private KmerAndInterval(final Kryo kryo, final Input input ) {
-            kmer = kryo.readObject(input, SVKmer.class);
+            super(kryo, input);
             intervalId = input.readInt();
         }
 
-        private void serialize( final Kryo kryo, final Output output ) {
-            kryo.writeObject(output, kmer);
+        protected void serialize( final Kryo kryo, final Output output ) {
+            super.serialize(kryo, output);
             output.writeInt(intervalId);
-        }
-
-        @Override
-        public int hashCode() {
-            return kmer.hashCode();
         }
 
         @Override
@@ -808,21 +802,13 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         }
 
         public boolean equals( final KmerAndInterval that ) {
-            return this.kmer.equals(that.kmer) && this.intervalId == that.intervalId;
-        }
-
-        @Override
-        public int compareTo( final KmerAndInterval that ) {
-            int result = this.kmer.compareTo(that.kmer);
-            if ( result == 0 ) result = Integer.compare(this.intervalId, that.intervalId);
-            return result;
+            return super.equals(that) && this.intervalId == that.intervalId;
         }
 
         public int getIntervalId() { return intervalId; }
-        public SVKmer getKmer() { return kmer; }
 
         @Override
-        public String toString() { return kmer.toString(SVConstants.KMER_SIZE)+" "+intervalId; }
+        public String toString() { return super.toString(SVConstants.KMER_SIZE)+" "+intervalId; }
 
         public static final class Serializer extends com.esotericsoftware.kryo.Serializer<KmerAndInterval> {
             @Override
@@ -888,7 +874,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
 
         public Iterable<KmerAndInterval> call(final Iterator<Tuple2<KmerAndInterval, Integer>> kmerCountItr ) {
 
-            // remove kmers with low counts that probably represent sequencing errors
+            // remove kmers with extreme counts that won't help in building a local assembly
             while ( kmerCountItr.hasNext() ) {
                 final Tuple2<KmerAndInterval, Integer> kmerCount = kmerCountItr.next();
                 final int count = kmerCount._2;
@@ -917,7 +903,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                 kmers[idx++] = itr.next();
             }
 
-            // sort the entries in natural order (by kmer, and then interval)
+            // sort the entries by kmer
             Arrays.sort(kmers);
 
             // remove entries sharing a kmer value that appear in more than MAX_INTERVALS intervals
@@ -926,10 +912,10 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             int testIdx = 1;
             while ( testIdx < nKmers ) {
                 // first kmer in the group
-                final SVKmer test = kmers[readIdx].getKmer();
+                final SVKmer test = kmers[readIdx];
 
                 // bump testIdx until the kmer changes (or we run out of entries)
-                while ( testIdx < nKmers && test.equals(kmers[testIdx].getKmer()) ) {
+                while ( testIdx < nKmers && test.equals(kmers[testIdx]) ) {
                     ++testIdx;
                 }
 
@@ -969,7 +955,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                         final Iterator<KmerAndInterval> itr = kmerAndIntervalSet.bucketIterator(kmer.hashCode());
                         while ( itr.hasNext() ) {
                             final KmerAndInterval kmerAndInterval = itr.next();
-                            if (kmer.equals(kmerAndInterval.getKmer())) {
+                            if (kmer.equals(kmerAndInterval)) {
                                 intervalIdSet.add(kmerAndInterval.getIntervalId());
                             }
                         }
@@ -1014,7 +1000,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         private String fastqForRead( final GATKRead read ) {
             final String nameSuffix = read.isPaired() ? (read.isFirstOfPair() ? "/1" : "/2") : "";
             final String mappedLocation = read.isUnmapped() ? "*" : read.getContig()+":"+read.getStart();
-            return "@" + read.getName() + nameSuffix + "@" + mappedLocation + "\n" +
+            return "@" + read.getName() + nameSuffix + "|" + mappedLocation + "\n" +
                     read.getBasesString() + "\n" +
                     "+\n" +
                     ReadUtils.getBaseQualityString(read)+"\n";
