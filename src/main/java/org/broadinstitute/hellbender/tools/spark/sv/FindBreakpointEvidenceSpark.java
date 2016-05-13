@@ -88,6 +88,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         final SAMFileHeader header = getHeaderForReads();
         final JavaRDD<GATKRead> reads = getUnfilteredReads();
         final HopscotchHashSet<QNameAndInterval> qNamesSet;
+        int nIntervals;
         if ( true ) {
             final HopscotchHashSet<KmerAndInterval> kmerAndIntervalsSet;
             if ( true ) {
@@ -95,6 +96,10 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                 final Broadcast<ReadMetadata> broadcastMetadata = ctx.broadcast(readMetadata);
                 final List<Interval> intervals =
                         getIntervals(broadcastMetadata, header, reads, locations, pipelineOptions);
+
+                nIntervals = intervals.size();
+                if ( nIntervals == 0 ) return;
+
                 qNamesSet = getQNames(ctx, broadcastMetadata, intervals, reads, locations, pipelineOptions);
 
                 broadcastMetadata.destroy();
@@ -110,11 +115,12 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
 
             log("Discovered "+qNamesSet.size()+" unique template names for assembly.");
         }
-        generateFastqs(ctx, qNamesSet, reads, locations);
+        generateFastqs(ctx, qNamesSet, nIntervals, reads, locations);
     }
 
     private static void generateFastqs( final JavaSparkContext ctx,
                                         final HopscotchHashSet<QNameAndInterval> qNamesSet,
+                                        final int nIntervals,
                                         final JavaRDD<GATKRead> reads,
                                         final Locations locations) {
         final Broadcast<HopscotchHashSet<QNameAndInterval>> broadcastQNamesSet = ctx.broadcast(qNamesSet);
@@ -122,16 +128,23 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
 
         reads
             .mapPartitionsToPair(readItr ->
-                    new MapPartitioner<>(readItr, new ReadsForQNamesFinder(broadcastQNamesSet.value())), false)
-            .groupByKey()
+                    new ReadsForQNamesFinder(broadcastQNamesSet.value(), nIntervals).call(readItr), false)
+            .reduceByKey(FindBreakpointEvidenceSpark::combineLists)
             .foreach(intervalAndFastqs -> writeFastq(intervalAndFastqs, outputDir));
 
         broadcastQNamesSet.destroy();
         log("Wrote FASTQs for assembly.");
     }
 
+    private static List<byte[]> combineLists( final List<byte[]> list1, final List<byte[]> list2 ) {
+        final List<byte[]> result = new ArrayList<>(list1.size() + list2.size());
+        result.addAll(list1);
+        result.addAll(list2);
+        return result;
+    }
+
     /** write a FASTQ file for an assembly */
-    private static void writeFastq( final Tuple2<Integer, Iterable<byte[]>> intervalAndFastqs,
+    private static void writeFastq( final Tuple2<Integer, List<byte[]>> intervalAndFastqs,
                                     final String outputDir ) {
         final int nFastqs = SVUtils.iteratorSize(intervalAndFastqs._2.iterator());
         final byte[][] fastqsArray = new byte[nFastqs][];
@@ -216,7 +229,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                         new QNameKmerizer(broadcastQNameAndIntervalsSet.value(),
                                         broadcastKmerKillSet.value())), false)
             .reduceByKey( (c1, c2) -> c1+c2 )
-            .mapPartitions(kmerItr -> new KmerCleaner().call(kmerItr))
+            .mapPartitions(itr -> new KmerCleaner().call(itr))
             .collect();
 
         broadcastQNameAndIntervalsSet.destroy();
@@ -971,36 +984,59 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     /**
      * Find <intervalId,fastqBytes> pairs for interesting template names.
      */
-    private static final class ReadsForQNamesFinder
-            implements Function<GATKRead, Iterator<Tuple2<Integer, byte[]>>> {
+    private static final class ReadsForQNamesFinder {
         private final HopscotchHashSet<QNameAndInterval> qNamesSet;
-        private final List<Tuple2<Integer, byte[]>> fastQRecords = new ArrayList<>();
+        private final int nIntervals;
+        private final int nReadsPerInterval;
+        private final List<Tuple2<Integer, List<byte[]>>> fastQRecords = new ArrayList<>();
 
-        ReadsForQNamesFinder( final HopscotchHashSet<QNameAndInterval> qNamesSet ) {
+        @SuppressWarnings("unchecked")
+        ReadsForQNamesFinder( final HopscotchHashSet<QNameAndInterval> qNamesSet, final int nIntervals ) {
             this.qNamesSet = qNamesSet;
+            this.nIntervals = nIntervals;
+            this.nReadsPerInterval = 2*qNamesSet.size()/nIntervals;
         }
 
-        public Iterator<Tuple2<Integer, byte[]>> apply( final GATKRead read ) {
-            final String readName = read.getName();
-            final int readNameHash = readName.hashCode();
-            final byte[] readNameBytes = readName.getBytes();
-            final Iterator<QNameAndInterval> namesItr = qNamesSet.bucketIterator(readNameHash);
-            byte[] fastqBytes = null;
-            fastQRecords.clear();
-            while ( namesItr.hasNext() ) {
-                final QNameAndInterval nameAndInterval = namesItr.next();
-                if ( nameAndInterval.hashCode() == readNameHash && nameAndInterval.sameName(readNameBytes) ) {
-                    if ( fastqBytes == null ) fastqBytes = fastqForRead(read).getBytes();
-                    fastQRecords.add(new Tuple2<>(nameAndInterval.getIntervalId(), fastqBytes));
+        public Iterable<Tuple2<Integer, List<byte[]>>> call( final Iterator<GATKRead> readsItr ) {
+            @SuppressWarnings("unchecked")
+            final List<byte[]>[] intervalReads = (List<byte[]>[])new List[nIntervals];
+            int nPopulatedIntervals = 0;
+            while ( readsItr.hasNext() ) {
+                final GATKRead read = readsItr.next();
+                final String readName = read.getName();
+                final int readNameHash = readName.hashCode();
+                final byte[] readNameBytes = readName.getBytes();
+                final Iterator<QNameAndInterval> namesItr = qNamesSet.bucketIterator(readNameHash);
+                byte[] fastqBytes = null;
+                while (namesItr.hasNext()) {
+                    final QNameAndInterval nameAndInterval = namesItr.next();
+                    if (nameAndInterval.hashCode() == readNameHash && nameAndInterval.sameName(readNameBytes)) {
+                        if (fastqBytes == null) fastqBytes = fastqForRead(read).getBytes();
+                        final int intervalId = nameAndInterval.getIntervalId();
+                        if ( intervalReads[intervalId] == null ) {
+                            intervalReads[intervalId] = new ArrayList<>(nReadsPerInterval);
+                            nPopulatedIntervals += 1;
+                        }
+                        intervalReads[intervalId].add(fastqBytes);
+                    }
                 }
             }
-            return fastQRecords.iterator();
+            fastQRecords.clear();
+            if ( nPopulatedIntervals > 0 ) {
+                for ( int idx = 0; idx != nIntervals; ++idx ) {
+                    final List<byte[]> readList = intervalReads[idx];
+                    if ( readList != null ) fastQRecords.add(new Tuple2<>(idx, readList));
+                }
+            }
+            return fastQRecords;
         }
 
         private String fastqForRead( final GATKRead read ) {
             final String nameSuffix = read.isPaired() ? (read.isFirstOfPair() ? "/1" : "/2") : "";
-            final String mappedLocation = read.isUnmapped() ? "*" : read.getContig()+":"+read.getStart();
-            return "@" + read.getName() + nameSuffix + "|" + mappedLocation + "\n" +
+            //final String mappedLocation = read.isUnmapped() ? "*" : read.getContig()+":"+read.getStart();
+            return "@" + read.getName() + nameSuffix +
+                    // "|" + mappedLocation +
+                    "\n" +
                     read.getBasesString() + "\n" +
                     "+\n" +
                     ReadUtils.getBaseQualityString(read)+"\n";
