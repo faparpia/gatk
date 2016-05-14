@@ -40,7 +40,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     public String pathToSGA = null;
 
     @Argument(doc       = "An URI to header-less file where each line contains a breakpoint ID and " +
-                            "the absolute path to one raw FASTQ file delimited by a tab",
+                            "the absolute path (an URI) to one raw FASTQ file delimited by a tab",
               shortName = "fl",
               fullName  = "fastqList",
               optional  = false)
@@ -51,12 +51,6 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
               fullName  = "outputDirectory",
               optional  = false)
     public String outputDir = null;
-
-    @Argument(doc       = "Number of threads to use when running sga.",
-              shortName = "t",
-              fullName  = "threads",
-              optional  = true)
-    public int threads = 1;
 
     @Argument(doc       = "To run k-mer based read correction, filter and duplication removal in SGA or not, with default parameters.",
               shortName = "correct",
@@ -89,7 +83,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         seqsArrangedByBreakpoints.filter(pair -> (pair._2()!=null));
 
         // distribute/copy FASTA file to local disks and perform assembly (temp files live in temp dir that cleans self up automatically)
-        final JavaPairRDD<Long, PipeLineResult> assembledContigs = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(fs, entry, sgaPath, threads, runCorrectionSteps));
+        final JavaPairRDD<Long, PipeLineResult> assembledContigs = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(fs, entry, sgaPath, runCorrectionSteps));
 
         // validate the results returned: save FASTA file for breakpoints that successfully assembled, or save error messages it somewhere along the process things went wrong.
         validateAndSaveResults(assembledContigs, outputDir);
@@ -130,17 +124,17 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      *   is URI to its associated FASTQ file on HDFS.
      * @param recordLine    a line of text containing the breakpoint ID and URI to associated FASTQ file
      * @return              a pair constructed by splitting the string into the ID part and the URI part
-     *                      the URI part will be null if cannot be parsed
+     * @throws UserException if the string could not be successfully parsed and split
      */
     @VisibleForTesting
-    static Tuple2<Long, URI> assignFASTQToBreakpoints(final String recordLine){
+    static Tuple2<Long, URI> assignFASTQToBreakpoints(final String recordLine) throws UserException{
         final String[] recordForOneBreakPoint = recordLine.split("\t");
         final Long breakpointID = Long.valueOf(recordForOneBreakPoint[0]);
         try{
             final URI fastqURI = new URI(recordForOneBreakPoint[1]);
             return new Tuple2<>(breakpointID, fastqURI);
         }catch (final URISyntaxException e){
-            return new Tuple2<>(breakpointID, null);
+            throw new UserException("Could not parse URI for breakpoint: " + breakpointID.toString() + "\n" + e.getMessage());
         }
     }
 
@@ -149,7 +143,6 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * Actual assembly work is delegated to other functions.
      * @param fastqOfABreakpoint    the breakpoint ID and URI to the FASTQ file
      * @param sgaPath               full path to SGA
-     * @param threads               number of threads to use in various modules, if the module supports parallelism
      * @param runCorrections        user's decision to run SGA's corrections (with default parameter values) or not
      * @return                      contig file (if process succeed) and runtime information, associated with the breakpoint ID
      */
@@ -157,19 +150,15 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     static Tuple2<Long, PipeLineResult> performAssembly(final FileSystem fs,
                                                         final Tuple2<Long, URI> fastqOfABreakpoint,
                                                         final Path sgaPath,
-                                                        final int threads,
                                                         final boolean runCorrections){
 
         final Long breakpointID = fastqOfABreakpoint._1();
         final URI  uriToFASTQ   = fastqOfABreakpoint._2();
-        if(null==uriToFASTQ){
-            return new Tuple2<>(breakpointID, new PipeLineResult("Failed to parse URI for breakpoint: " + breakpointID.toString()));
-        }
 
         final Tuple2<File, String> copySuccess = makeTempDirAndCopyFASTQToLocal(fs, uriToFASTQ, breakpointID);
         final File workingDir = copySuccess._1();
         if(workingDir!=null){
-            final PipeLineResult assembledContigsFileAndRuntimeInfo = runSGAModulesInSerial(sgaPath, workingDir, copySuccess._2(), threads, runCorrections);
+            final PipeLineResult assembledContigsFileAndRuntimeInfo = runSGAModulesInSerial(sgaPath, workingDir, copySuccess._2(), runCorrections);
             return new Tuple2<>(breakpointID, assembledContigsFileAndRuntimeInfo);
         }else{
             return new Tuple2<>(breakpointID, new PipeLineResult(copySuccess._2()));
@@ -206,7 +195,6 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * @param sgaPath           full path on the executors to the SGA program
      * @param workingDir        directory for SGA to work in (since many files are produced along the process)
      * @param rawFASTQFileName  file name of the FASTQ file in workingDir
-     * @param threads           threads to be used by SGA modules, if the module supports multithreading
      * @param runCorrections    to run SGA correction steps--correct, filter, rmdup, merge--or not
      * @return                  the result accumulated through running the pipeline, where the contigs could be null if the process erred.
      */
@@ -214,15 +202,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     static PipeLineResult runSGAModulesInSerial(final Path sgaPath,
                                                 final File workingDir,
                                                 final String rawFASTQFileName,
-                                                final int threads,
                                                 final boolean runCorrections){
-
-        int threadsToUse = threads;
-        if( System.getProperty("os.name").toLowerCase().contains("mac") && threads>1){
-            System.err.println("Running on Mac OS X, which doesn't provide unnamed semaphores used by SGA for multithreading. " +
-                               "Resetting threads argument to 1. ");
-            threadsToUse = 1;
-        }
 
         final File rawFASTQ = new File(workingDir, rawFASTQFileName);
 
@@ -230,14 +210,13 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         final SGAModule indexer = new SGAModule("index");
         final List<String> indexerArgs = new ArrayList<>();
         indexerArgs.add("--algorithm"); indexerArgs.add("ropebwt");
-        indexerArgs.add("--threads");   indexerArgs.add(Integer.toString(threadsToUse));
         indexerArgs.add("--check");
         indexerArgs.add("");
 
         // collect runtime information along the way
         final List<SGAModule.RuntimeInfo> runtimeInfo = new ArrayList<>();
 
-        String preppedFileName = runAndStopEarly("preprocess", rawFASTQ, sgaPath, workingDir, threadsToUse, indexer, indexerArgs, runtimeInfo);
+        String preppedFileName = runAndStopEarly("preprocess", rawFASTQ, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
         if( null == preppedFileName ){
             final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
             return new PipeLineResult(sgaErred);
@@ -246,21 +225,21 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         if(runCorrections){// correction, filter, and remove duplicates stringed together
             final File preprocessedFile = new File(workingDir, preppedFileName);
 
-            preppedFileName = runAndStopEarly("correct", preprocessedFile, sgaPath, workingDir, threadsToUse, indexer, indexerArgs, runtimeInfo);
+            preppedFileName = runAndStopEarly("correct", preprocessedFile, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
                 final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
                 return new PipeLineResult(sgaErred);
             }
             final File correctedFile = new File(workingDir, preppedFileName);
 
-            preppedFileName = runAndStopEarly("filter", correctedFile, sgaPath, workingDir, threadsToUse, indexer, indexerArgs, runtimeInfo);
+            preppedFileName = runAndStopEarly("filter", correctedFile, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
                 final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
                 return new PipeLineResult(sgaErred);
             }
             final File filterPassingFile = new File(workingDir, preppedFileName);
 
-            preppedFileName = runAndStopEarly("rmdup", filterPassingFile, sgaPath, workingDir, threadsToUse, indexer, indexerArgs, runtimeInfo);
+            preppedFileName = runAndStopEarly("rmdup", filterPassingFile, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
                 final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
                 return new PipeLineResult(sgaErred);
@@ -268,14 +247,14 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         }
 
         final File fileToMerge      = new File(workingDir, preppedFileName);
-        final String fileNameToAssemble = runAndStopEarly("fm-merge", fileToMerge, sgaPath, workingDir, threadsToUse, indexer, indexerArgs, runtimeInfo);
+        final String fileNameToAssemble = runAndStopEarly("fm-merge", fileToMerge, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
         if(null == fileNameToAssemble){
             final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
             return new PipeLineResult(sgaErred);
         }
 
         final File fileToAssemble   = new File(workingDir, fileNameToAssemble);
-        final String contigsFileName = runAndStopEarly("assemble", fileToAssemble, sgaPath, workingDir, threadsToUse, indexer, indexerArgs, runtimeInfo);
+        final String contigsFileName = runAndStopEarly("assemble", fileToAssemble, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
         if(null == contigsFileName){
             final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
             return new PipeLineResult(sgaErred);
@@ -297,10 +276,9 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * Call the right sga module, log runtime information, and return the output file name if succeed.
      * If process erred, the string returned is null.
      * @param moduleName            SGA module name to be run
-     * @param inputFASTQFile        FASTQ file tobe fed to SGA modul
+     * @param inputFASTQFile        FASTQ file tobe fed to SGA module
      * @param sgaPath               full path to the SGA program
      * @param workingDir            directory the SGA pipeline is working in
-     * @param threads               threads to use
      * @param indexer               module representing SGA index
      * @param indexerArgs           arguments used by SGA index
      * @param collectedRuntimeInfo  runtime information collected along the process
@@ -310,7 +288,6 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
                                           final File inputFASTQFile,
                                           final Path sgaPath,
                                           final File workingDir,
-                                          final int threads,
                                           final SGAModule indexer,
                                           final List<String> indexerArgs,
                                           final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
@@ -319,15 +296,15 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         if(moduleName.equalsIgnoreCase("preprocess")){
             filenameToReturn = runSGAPreprocess(sgaPath, inputFASTQFile, workingDir, indexer, indexerArgs, collectedRuntimeInfo);
         }else if(moduleName.equalsIgnoreCase("correct")){
-            filenameToReturn = runSGACorrect(sgaPath, inputFASTQFile, workingDir, threads, indexer, indexerArgs, collectedRuntimeInfo);
+            filenameToReturn = runSGACorrect(sgaPath, inputFASTQFile, workingDir, indexer, indexerArgs, collectedRuntimeInfo);
         }else if(moduleName.equalsIgnoreCase("filter")){
-            filenameToReturn = runSGAFilter(sgaPath, inputFASTQFile, workingDir, threads, collectedRuntimeInfo);
+            filenameToReturn = runSGAFilter(sgaPath, inputFASTQFile, workingDir, collectedRuntimeInfo);
         }else if(moduleName.equalsIgnoreCase("rmdup")){
-            filenameToReturn = runSGARmDuplicate(sgaPath, inputFASTQFile, workingDir, threads, indexer, indexerArgs, collectedRuntimeInfo);
+            filenameToReturn = runSGARmDuplicate(sgaPath, inputFASTQFile, workingDir, indexer, indexerArgs, collectedRuntimeInfo);
         }else if(moduleName.equalsIgnoreCase("fm-merge")){
-            filenameToReturn = runSGAFMMerge(sgaPath, inputFASTQFile, workingDir, threads, indexer, indexerArgs, collectedRuntimeInfo);
+            filenameToReturn = runSGAFMMerge(sgaPath, inputFASTQFile, workingDir, indexer, indexerArgs, collectedRuntimeInfo);
         }else if(moduleName.equalsIgnoreCase("assemble")){
-            filenameToReturn = runSGAOverlapAndAssemble(sgaPath, inputFASTQFile, workingDir, threads, collectedRuntimeInfo);
+            filenameToReturn = runSGAOverlapAndAssemble(sgaPath, inputFASTQFile, workingDir, collectedRuntimeInfo);
         }else{
             throw new GATKException("Wrong module called"); // should never occur, implementation mistake
         }
@@ -373,24 +350,21 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     static String runSGACorrect(final Path sgaPath,
                                 final File inputFASTAFile,
                                 final File outputDirectory,
-                                final int threads,
                                 final SGAModule indexer,
                                 final List<String> indexerArgs,
                                 final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
-        return runSimpleModuleFollowedByIndexing(sgaPath, "correct", ".ec.fa", inputFASTAFile, outputDirectory, threads, indexer, indexerArgs, collectedRuntimeInfo);
+        return runSimpleModuleFollowedByIndexing(sgaPath, "correct", ".ec.fa", inputFASTAFile, outputDirectory, indexer, indexerArgs, collectedRuntimeInfo);
     }
 
     @VisibleForTesting
     static String runSGAFilter(final Path sgaPath,
                                final File inputFASTAFile,
                                final File outputDirectory,
-                               final int threads,
                                final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
 
         final String prefix = FilenameUtils.getBaseName(inputFASTAFile.getName());
         final SGAModule filter = new SGAModule("filter");
         final List<String> filterArgs = new ArrayList<>();
-        filterArgs.add("--threads"); filterArgs.add(Integer.toString(threads));
         filterArgs.add(prefix+".fa");
         final SGAModule.RuntimeInfo filterInfo = filter.run(sgaPath, outputDirectory, filterArgs);
         collectedRuntimeInfo.add(filterInfo);
@@ -402,34 +376,30 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     static String runSGARmDuplicate(final Path sgaPath,
                                     final File inputFASTAFile,
                                     final File outputDirectory,
-                                    final int threads,
                                     final SGAModule indexer,
                                     final List<String> indexerArgs,
                                     final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
-        return runSimpleModuleFollowedByIndexing(sgaPath, "rmdup", ".rmdup.fa", inputFASTAFile, outputDirectory, threads, indexer, indexerArgs, collectedRuntimeInfo);
+        return runSimpleModuleFollowedByIndexing(sgaPath, "rmdup", ".rmdup.fa", inputFASTAFile, outputDirectory, indexer, indexerArgs, collectedRuntimeInfo);
     }
 
     @VisibleForTesting
     static String runSGAFMMerge(final Path sgaPath,
                                 final File inputFASTAFile,
                                 final File outputDirectory,
-                                final int threads,
                                 final SGAModule indexer,
                                 final List<String> indexerArgs,
                                 final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
-        return runSimpleModuleFollowedByIndexing(sgaPath, "fm-merge", ".merged.fa", inputFASTAFile, outputDirectory, threads, indexer, indexerArgs, collectedRuntimeInfo);
+        return runSimpleModuleFollowedByIndexing(sgaPath, "fm-merge", ".merged.fa", inputFASTAFile, outputDirectory, indexer, indexerArgs, collectedRuntimeInfo);
     }
 
     @VisibleForTesting
     static String runSGAOverlapAndAssemble(final Path sgaPath,
                                            final File inputFASTAFile,
                                            final File outputDirectory,
-                                           final int threads,
                                            final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
 
         final SGAModule overlap = new SGAModule("overlap");
         final List<String> overlapArgs = new ArrayList<>();
-        overlapArgs.add("--threads"); overlapArgs.add(Integer.toString(threads));
         overlapArgs.add(inputFASTAFile.getName());
 
         final SGAModule.RuntimeInfo overlapInfo = overlap.run(sgaPath, outputDirectory, overlapArgs);
@@ -454,14 +424,12 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
                                                             final String extensionToAppend,
                                                             final File inputFASTAFile,
                                                             final File outputDirectory,
-                                                            final int threads,
                                                             final SGAModule indexer,
                                                             final List<String> indexerArgs,
                                                             final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
 
         final SGAModule module = new SGAModule(moduleName);
         final List<String> args = new ArrayList<>();
-        args.add("--threads");   args.add(Integer.toString(threads));
         args.add(inputFASTAFile.getName());
 
         final SGAModule.RuntimeInfo moduleInfo = module.run(sgaPath, outputDirectory, args);
