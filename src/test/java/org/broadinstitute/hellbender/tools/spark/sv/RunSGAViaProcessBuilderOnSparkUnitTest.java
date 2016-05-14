@@ -88,9 +88,7 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
 
         for(final Tuple2<Long, URI> breakpoint : rawFASTQFiles){
 
-            final FileSystem fs = FileSystem.getLocal(new Configuration());
-
-            final RunSGAViaProcessBuilderOnSpark.PipeLineResult result = RunSGAViaProcessBuilderOnSpark.performAssembly(fs, breakpoint, sgaPath, true)._2();
+            final RunSGAViaProcessBuilderOnSpark.PipeLineResult result = RunSGAViaProcessBuilderOnSpark.performAssembly(breakpoint, sgaPath, true)._2();
 
             final File expectedAssembledContigFile = new File( expectedAssembledFASTAFiles.get(breakpoint._1()) );
             final List<String> expectedFASTAContents = (null==expectedAssembledContigFile) ? null : Files.readAllLines(Paths.get(expectedAssembledContigFile.getAbsolutePath()));
@@ -106,21 +104,19 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
         for(final Tuple2<Long, URI> breakpoint : rawFASTQFiles){
 
             //prep: make temp dir, copy file
-            final FileSystem fs = FileSystem.getLocal(new Configuration());
+            final LocalFileSystem lfs = FileSystem.getLocal(new Configuration());
 
-            final Tuple2<File, String> copySuccess = RunSGAViaProcessBuilderOnSpark.makeTempDirAndCopyFASTQToLocal(fs, breakpoint._2(), breakpoint._1());
+            final File rawFASTQFile = RunSGAViaProcessBuilderOnSpark.makeTempDirAndCopyFASTQToLocal(lfs, breakpoint._2(), breakpoint._1());
 
-            final File workingDir = copySuccess._1();
-            final String rawFASTQFileName = copySuccess._2();
-            final File rawFASTQ = new File(workingDir, rawFASTQFileName);
             final File expectedAssembledContigFile = new File( expectedAssembledFASTAFiles.get(breakpoint._1()) );
 
-            stepByStepTestWorker(workingDir, rawFASTQ, expectedAssembledContigFile);
+            stepByStepTestWorker(rawFASTQFile, expectedAssembledContigFile);
         }
     }
 
-    private static void stepByStepTestWorker(final File workingDir, final File rawFASTQ, final File expectedAssembledContigFile) throws IOException, InterruptedException, RuntimeException{
+    private static void stepByStepTestWorker(final File rawFASTQFile, final File expectedAssembledContigFile) throws IOException, InterruptedException, RuntimeException{
 
+        final File workingDir = rawFASTQFile.getParentFile();
         final List<SGAModule.RuntimeInfo> runtimeInfo = new ArrayList<>();
 
         ArrayList<Integer> editDistancesBetweenSeq = new ArrayList<>();
@@ -131,9 +127,9 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
         indexerArgs.add("--check");
         indexerArgs.add("");
 
-        final String filenamePrefix = FilenameUtils.getBaseName(rawFASTQ.getName());
+        final String filenamePrefix = FilenameUtils.getBaseName(rawFASTQFile.getName());
 
-        final File actualPreppedFile = new File(workingDir, RunSGAViaProcessBuilderOnSpark.runSGAPreprocess(sgaPath, rawFASTQ, workingDir, indexer, indexerArgs, runtimeInfo));
+        final File actualPreppedFile = new File(workingDir, RunSGAViaProcessBuilderOnSpark.runSGAPreprocess(sgaPath, rawFASTQFile, workingDir, indexer, indexerArgs, runtimeInfo));
         final File expectedPreppedFile = new File(TEST_DATA_DIR, filenamePrefix + ".pp.fa");
         final String preppedFileName = compareNamesAndComputeSeqEditDist(actualPreppedFile, expectedPreppedFile, true, editDistancesBetweenSeq);
         for(final Integer d : editDistancesBetweenSeq){ Assert.assertEquals(d, zero); }
@@ -230,9 +226,10 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
                 sequencesAreCloseEnough = (minDist <= editDistanceTolerance);
                 if(0!=minDist){
                     System.err.println("Contig that has nonzero edit distance is of length " + Integer.toString(actualString.length()) +
-                            "\nactual sequence: " + actualString +
-                            "\nreverse complement of actual sequence: " + rcOfActualString +
-                            "\nexpected sequence: " + expectedString);
+                                        "\nEdit distance:" + String.valueOf(minDist) +
+                                        "\nactual sequence: " + actualString +
+                                        "\nreverse complement of actual sequence: " + rcOfActualString +
+                                        "\nexpected sequence: " + expectedString);
                 }
             }
 

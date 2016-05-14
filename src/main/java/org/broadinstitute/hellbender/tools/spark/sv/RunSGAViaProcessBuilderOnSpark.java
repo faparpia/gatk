@@ -2,6 +2,7 @@ package org.broadinstitute.hellbender.tools.spark.sv;
 
 import com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.io.FilenameUtils;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.*;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
@@ -83,7 +84,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         seqsArrangedByBreakpoints.filter(pair -> (pair._2()!=null));
 
         // distribute/copy FASTA file to local disks and perform assembly (temp files live in temp dir that cleans self up automatically)
-        final JavaPairRDD<Long, PipeLineResult> assembledContigs = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(fs, entry, sgaPath, runCorrectionSteps));
+        final JavaPairRDD<Long, PipeLineResult> assembledContigs = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(entry, sgaPath, runCorrectionSteps));
 
         // validate the results returned: save FASTA file for breakpoints that successfully assembled, or save error messages it somewhere along the process things went wrong.
         validateAndSaveResults(assembledContigs, outputDir);
@@ -124,7 +125,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      *   is URI to its associated FASTQ file on HDFS.
      * @param recordLine    a line of text containing the breakpoint ID and URI to associated FASTQ file
      * @return              a pair constructed by splitting the string into the ID part and the URI part
-     * @throws UserException if the string could not be successfully parsed and split
+     * @throws UserException if the URI part of the string could not be successfully parsed
      */
     @VisibleForTesting
     static Tuple2<Long, URI> assignFASTQToBreakpoints(final String recordLine) throws UserException{
@@ -145,66 +146,61 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * @param sgaPath               full path to SGA
      * @param runCorrections        user's decision to run SGA's corrections (with default parameter values) or not
      * @return                      contig file (if process succeed) and runtime information, associated with the breakpoint ID
+     * @throws IOException          if fails to create temporary directory on local filesystem or fails to copy FASTQ file
      */
     @VisibleForTesting
-    static Tuple2<Long, PipeLineResult> performAssembly(final FileSystem fs,
-                                                        final Tuple2<Long, URI> fastqOfABreakpoint,
+    static Tuple2<Long, PipeLineResult> performAssembly(final Tuple2<Long, URI> fastqOfABreakpoint,
                                                         final Path sgaPath,
-                                                        final boolean runCorrections){
+                                                        final boolean runCorrections)
+    throws IOException{
 
         final Long breakpointID = fastqOfABreakpoint._1();
         final URI  uriToFASTQ   = fastqOfABreakpoint._2();
 
-        final Tuple2<File, String> copySuccess = makeTempDirAndCopyFASTQToLocal(fs, uriToFASTQ, breakpointID);
-        final File workingDir = copySuccess._1();
-        if(workingDir!=null){
-            final PipeLineResult assembledContigsFileAndRuntimeInfo = runSGAModulesInSerial(sgaPath, workingDir, copySuccess._2(), runCorrections);
-            return new Tuple2<>(breakpointID, assembledContigsFileAndRuntimeInfo);
-        }else{
-            return new Tuple2<>(breakpointID, new PipeLineResult(copySuccess._2()));
-        }
+        final LocalFileSystem lfs = FileSystem.getLocal(new Configuration());
+        final File localFASTQFile = makeTempDirAndCopyFASTQToLocal(lfs, uriToFASTQ, breakpointID);
+
+        final File tempWorkingDir = localFASTQFile.getParentFile();
+        final PipeLineResult assembledContigsFileAndRuntimeInfo = runSGAModulesInSerial(sgaPath, localFASTQFile, runCorrections);
+        return new Tuple2<>(breakpointID, assembledContigsFileAndRuntimeInfo);
     }
 
     /**
      * Copy from hdfs to temp local dir
-     * @param fs            filesystem
+     * @param lfs            local filesystem
      * @param uriToFASTQ    uri to source
      * @param breakpointID  breakpoint ID
-     * @return              (temp directory, FASTQ file name) if successfully copied, or (null, error message) if failed
+     * @return              Path to the copied FASTQ file living in the temp local dir
+     * @throws IOException  if fails to either create the temporary directory or copy the FASTQ file
      */
     @VisibleForTesting
-    static Tuple2<File, String> makeTempDirAndCopyFASTQToLocal(final FileSystem fs, final URI uriToFASTQ, final Long breakpointID){
+    static File makeTempDirAndCopyFASTQToLocal(final LocalFileSystem lfs, final URI uriToFASTQ, final Long breakpointID) throws IOException{
 
-        try{
-            final File workingDir = Files.createTempDirectory( "assembly" + breakpointID.toString() ).toAbsolutePath().toFile();
-            workingDir.deleteOnExit();
+        final File workingDir = Files.createTempDirectory( "assembly" + breakpointID.toString() ).toAbsolutePath().toFile();
+        workingDir.deleteOnExit();
 
-            final String rawFASTQFileName = FilenameUtils.getName(uriToFASTQ.getPath());
-            final org.apache.hadoop.fs.Path from = new org.apache.hadoop.fs.Path(uriToFASTQ);
-            final org.apache.hadoop.fs.Path to   = new org.apache.hadoop.fs.Path(workingDir.toPath().toAbsolutePath().toString()+"/"+rawFASTQFileName);
-            fs.copyToLocalFile(from, to);
-            return new Tuple2<>(workingDir, rawFASTQFileName);
-        } catch (final IOException ex){ // either failed to create temp dir or failed to copy
-            return new Tuple2<>(null, ex.getMessage());
-        }
+        final String rawFASTQFileName = FilenameUtils.getName(uriToFASTQ.getPath());
+        final org.apache.hadoop.fs.Path from = new org.apache.hadoop.fs.Path(uriToFASTQ);
+        final org.apache.hadoop.fs.Path to   = new org.apache.hadoop.fs.Path(workingDir.toPath().toAbsolutePath().toString()+"/"+rawFASTQFileName);
+        lfs.copyToLocalFile(from, to);
+        final File localFile = lfs.pathToFile(to);
+        return localFile;
     }
 
     /**
      * Linear pipeline for running the SGA local assembly process on a particular FASTQ file for its associated putative breakpoint.
      *
      * @param sgaPath           full path on the executors to the SGA program
-     * @param workingDir        directory for SGA to work in (since many files are produced along the process)
-     * @param rawFASTQFileName  file name of the FASTQ file in workingDir
+     * @param rawFASTQFile      FASTQ file in temp local working dir
      * @param runCorrections    to run SGA correction steps--correct, filter, rmdup, merge--or not
      * @return                  the result accumulated through running the pipeline, where the contigs could be null if the process erred.
      */
     @VisibleForTesting
     static PipeLineResult runSGAModulesInSerial(final Path sgaPath,
-                                                final File workingDir,
-                                                final String rawFASTQFileName,
+                                                final File rawFASTQFile,
                                                 final boolean runCorrections){
 
-        final File rawFASTQ = new File(workingDir, rawFASTQFileName);
+        final File tempWorkingDir = rawFASTQFile.getParentFile();
 
         // the index module is used frequently, so make single instance and pass around
         final SGAModule indexer = new SGAModule("index");
@@ -216,45 +212,45 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         // collect runtime information along the way
         final List<SGAModule.RuntimeInfo> runtimeInfo = new ArrayList<>();
 
-        String preppedFileName = runAndStopEarly("preprocess", rawFASTQ, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
+        String preppedFileName = runAndStopEarly("preprocess", rawFASTQFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
         if( null == preppedFileName ){
             final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
             return new PipeLineResult(sgaErred);
         }
 
         if(runCorrections){// correction, filter, and remove duplicates stringed together
-            final File preprocessedFile = new File(workingDir, preppedFileName);
+            final File preprocessedFile = new File(tempWorkingDir, preppedFileName);
 
-            preppedFileName = runAndStopEarly("correct", preprocessedFile, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
+            preppedFileName = runAndStopEarly("correct", preprocessedFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
                 final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
                 return new PipeLineResult(sgaErred);
             }
-            final File correctedFile = new File(workingDir, preppedFileName);
+            final File correctedFile = new File(tempWorkingDir, preppedFileName);
 
-            preppedFileName = runAndStopEarly("filter", correctedFile, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
+            preppedFileName = runAndStopEarly("filter", correctedFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
                 final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
                 return new PipeLineResult(sgaErred);
             }
-            final File filterPassingFile = new File(workingDir, preppedFileName);
+            final File filterPassingFile = new File(tempWorkingDir, preppedFileName);
 
-            preppedFileName = runAndStopEarly("rmdup", filterPassingFile, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
+            preppedFileName = runAndStopEarly("rmdup", filterPassingFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
                 final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
                 return new PipeLineResult(sgaErred);
             }
         }
 
-        final File fileToMerge      = new File(workingDir, preppedFileName);
-        final String fileNameToAssemble = runAndStopEarly("fm-merge", fileToMerge, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
+        final File fileToMerge      = new File(tempWorkingDir, preppedFileName);
+        final String fileNameToAssemble = runAndStopEarly("fm-merge", fileToMerge, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
         if(null == fileNameToAssemble){
             final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
             return new PipeLineResult(sgaErred);
         }
 
-        final File fileToAssemble   = new File(workingDir, fileNameToAssemble);
-        final String contigsFileName = runAndStopEarly("assemble", fileToAssemble, sgaPath, workingDir, indexer, indexerArgs, runtimeInfo);
+        final File fileToAssemble   = new File(tempWorkingDir, fileNameToAssemble);
+        final String contigsFileName = runAndStopEarly("assemble", fileToAssemble, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
         if(null == contigsFileName){
             final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
             return new PipeLineResult(sgaErred);
@@ -262,7 +258,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
         // if code reaches here, all steps in the SGA pipeline went smoothly,
         // but the following conversion from File to ContigsCollection may still err
-        final File assembledContigsFile = new File(workingDir, contigsFileName);
+        final File assembledContigsFile = new File(tempWorkingDir, contigsFileName);
         try{
             final List<String> contigsFASTAContents = (null==assembledContigsFile) ? null : Files.readAllLines(Paths.get(assembledContigsFile.getAbsolutePath()));
             final SGAAssemblyResult sgaResults =  new SGAAssemblyResult(contigsFASTAContents, runtimeInfo);
