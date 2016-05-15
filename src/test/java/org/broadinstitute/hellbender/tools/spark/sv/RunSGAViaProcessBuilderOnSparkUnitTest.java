@@ -86,15 +86,19 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
     @Test(groups = "sv")
     public void assemblyOneStepTest() throws IOException, InterruptedException, RuntimeException{
 
+        final FileSystem fs = FileSystem.get( new Configuration() );
+        final File outDir = Files.createTempDirectory( "whatever").toAbsolutePath().toFile();
+        outDir.deleteOnExit();
+
         for(final Tuple2<Long, URI> breakpoint : rawFASTQFiles){
 
-            final RunSGAViaProcessBuilderOnSpark.PipeLineResult result = RunSGAViaProcessBuilderOnSpark.performAssembly(breakpoint, sgaPath, true)._2();
+            final String failureMsg = RunSGAViaProcessBuilderOnSpark.performAssembly(breakpoint, sgaPath, true, fs, outDir.getAbsolutePath())._2();
+            Assert.assertTrue(failureMsg.isEmpty());
 
             final File expectedAssembledContigFile = new File( expectedAssembledFASTAFiles.get(breakpoint._1()) );
-            final List<String> expectedFASTAContents = (null==expectedAssembledContigFile) ? null : Files.readAllLines(Paths.get(expectedAssembledContigFile.getAbsolutePath()));
-            final RunSGAViaProcessBuilderOnSpark.ContigsCollection expectedContigsCollection = new RunSGAViaProcessBuilderOnSpark.ContigsCollection(expectedFASTAContents);
+            final File actualAssembledContigFile   = new File(outDir, expectedAssembledContigFile.getName());
 
-            compareContigs(result.sgaStepsResult.assembledContigs, expectedContigsCollection);
+            compareContigs(actualAssembledContigFile, expectedAssembledContigFile);
         }
     }
 
@@ -166,24 +170,21 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
         final File mergedFile = new File(workingDir, mergedFileName);
         final File actualAssembledContigsFile = new File(workingDir, RunSGAViaProcessBuilderOnSpark.runSGAOverlapAndAssemble(sgaPath, mergedFile, workingDir, runtimeInfo));
 
-        final List<String> actualFASTAContents = (null==actualAssembledContigsFile) ? null : Files.readAllLines(Paths.get(actualAssembledContigsFile.getAbsolutePath()));
-        final List<String> expectedFASTAContents = (null==expectedAssembledContigFile) ? null : Files.readAllLines(Paths.get(expectedAssembledContigFile.getAbsolutePath()));
-
-        final RunSGAViaProcessBuilderOnSpark.ContigsCollection actualAssembledContigs = new RunSGAViaProcessBuilderOnSpark.ContigsCollection(actualFASTAContents);
-        final RunSGAViaProcessBuilderOnSpark.ContigsCollection expectedAssembledContigs = new RunSGAViaProcessBuilderOnSpark.ContigsCollection(expectedFASTAContents);
-        compareContigs(actualAssembledContigs, expectedAssembledContigs);
+        compareContigs(actualAssembledContigsFile, expectedAssembledContigFile);
     }
 
-    private static void compareContigs(final RunSGAViaProcessBuilderOnSpark.ContigsCollection actualAssembledContigs,
-                                       final RunSGAViaProcessBuilderOnSpark.ContigsCollection expectedAssembledContigs)
+    private static void compareContigs(final File actualAssembledContigFile,
+                                       final File expectedAssembledContigFile)
             throws IOException, InterruptedException{
 
-        final SortedMap<Integer, String> expectedMap = collectContigsByLength(expectedAssembledContigs);
+        final List<String> actualFASTAContents   = (null==actualAssembledContigFile  ) ? null : Files.readAllLines(Paths.get(actualAssembledContigFile.getAbsolutePath()  ));
+        final List<String> expectedFASTAContents = (null==expectedAssembledContigFile) ? null : Files.readAllLines(Paths.get(expectedAssembledContigFile.getAbsolutePath()));
 
         // first create mapping from read length to sequence
         // (bad, but contig names are not guaranteed to be reproducible in different runs)
-        final SortedMap<Integer, String> actualMap = collectContigsByLength(actualAssembledContigs);
+        final SortedMap<Integer, String> actualMap = collectContigsByLength(actualFASTAContents);
 
+        final SortedMap<Integer, String> expectedMap = collectContigsByLength(expectedFASTAContents);
 
         // essentially, make sure the number of assembled contigs with unique length values are the same
         final SortedSet<Integer> actualLengthVals = new TreeSet<>(actualMap.keySet());
@@ -293,15 +294,19 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
 
     // utility function: generate mapping from contig length to its DNA sequence
     // this is possible because test result contigs have unique length values
-    private static SortedMap<Integer, String> collectContigsByLength(final RunSGAViaProcessBuilderOnSpark.ContigsCollection contigsCollection){
+    private static SortedMap<Integer, String> collectContigsByLength(final List<String> contigFileContents){
 
-        final List<Tuple2<RunSGAViaProcessBuilderOnSpark.ContigsCollection.ContigID, RunSGAViaProcessBuilderOnSpark.ContigsCollection.ContigSequence>> sequences = contigsCollection.getContents();
-        final Iterator<Tuple2<RunSGAViaProcessBuilderOnSpark.ContigsCollection.ContigID, RunSGAViaProcessBuilderOnSpark.ContigsCollection.ContigSequence>> it = sequences.iterator();
+        final Iterator<String> it = contigFileContents.iterator();
 
         final SortedMap<Integer, String> result = new TreeMap<>();
+        int i=0;
         while(it.hasNext()){
-            final String seq = it.next()._2().getSequenceAsString();
-            result.put(seq.length(), seq);
+            final String line = it.next();
+            if((++i)%2==1) {
+                continue;
+            } else{
+                result.put(line.length(), line);
+            }
         }
         return result;
     }

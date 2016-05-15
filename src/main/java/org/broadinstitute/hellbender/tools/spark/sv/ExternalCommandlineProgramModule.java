@@ -46,6 +46,34 @@ public abstract class ExternalCommandlineProgramModule {
             this.stdoutMsg    = stdoutMsg;
             this.stderrMsg    = stderrMsg;
         }
+
+        // for parsing contents to human readable string
+        @Override
+        public String toString(){
+            String result = "";
+            result += moduleName;
+            switch (returnStatus){
+                case SUCCESS:
+                    result += " successfully executed.";
+                case STARTFAIL:
+                    result += " failed to start.";
+                case INTERRUPTION:
+                    result += " was interrupted.";
+                case STDIOFAIL:
+                    result += " stdout and stderr wasn't successfully captured.";
+                case PGFAIL:
+                    result += " returned with non-zero exit status, see stderr message for detailed return status.";
+            }
+            if(null!=stdoutMsg || !stdoutMsg.isEmpty()){
+                result +=  "Module stdout message: ";
+                result += stdoutMsg;
+            }
+            if(null!=stderrMsg || !stderrMsg.isEmpty()){
+                result += " Module stderr message: ";
+                result += stderrMsg;
+            }
+            return result;
+        }
     }
 
     abstract public String getModuleName();

@@ -26,10 +26,11 @@ import java.util.List;
 
 // TODO: choose which parameters allowed to be tunable
 // TODO: if throws, would temp files be cleaned up automatically?
-// TODO: most robust way to check OS in method runSGAModulesInSerial (Mac doesn't support multi-thread mechanism in SGA)?
+// TODO: choose output contents (currently output information is more developer friendly than user friendly)
 @CommandLineProgramProperties(
-        summary        = "Program to call SGA to perform local assembly and return assembled contigs.",
-        oneLineSummary = "Perform SGA-based local assembly on fasta files on Spark",
+        summary        = "Program to call SGA to perform local assembly and return assembled contigs if successful, " +
+                          "or runtime error messages if the process erred for some breakpoints.",
+        oneLineSummary = "Perform SGA-based local assembly on fasta files on Spark.",
         programGroup   = StructuralVariationSparkProgramGroup.class)
 public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     private static final long serialVersionUID = 1L;
@@ -47,7 +48,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
               optional  = false)
     public String pathToFASTQListFile = null;
 
-    @Argument(doc       = "A path to a directory to write results to.",
+    @Argument(doc       = "An absolute path to a directory to write results to.",
               shortName = "outDir",
               fullName  = "outputDirectory",
               optional  = false)
@@ -69,7 +70,13 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
         final Path sgaPath = Paths.get(pathToSGA);
 
-        // IO (files) preparation
+        // first load RDD of pair that has breakpoint ID as its first and URI to FASTQ file as its second
+        final JavaRDD<String> rawFASTQFiles = ctx.textFile(Paths.get(pathToFASTQListFile).toAbsolutePath().toString());
+        final JavaPairRDD<Long, URI> seqsArrangedByBreakpoints = rawFASTQFiles.mapToPair(RunSGAViaProcessBuilderOnSpark::assignFASTQToBreakpoints);
+        seqsArrangedByBreakpoints.filter(pair -> (pair._2()!=null));
+
+        // distribute/copy FASTQ file to local disks and perform assembly (temp files live in temp dir that cleans self up automatically)
+        // then copy the resulted FASTA contig file back to the designated outputDir
         FileSystem proxy = null;
         try{
             proxy = FileSystem.get( ctx.hadoopConfiguration() );
@@ -77,47 +84,12 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
             throw new UserException("Cannot get configuration."); // Any better exception?
         }
         final FileSystem fs = proxy;
+        final JavaPairRDD<Long, String> assembly = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(entry, sgaPath, runCorrectionSteps, fs, outputDir));
 
-        // first load RDD of pair that has breakpoint ID as its first and URI to FASTQ file as its second
-        final JavaRDD<String> rawFASTQFiles = ctx.textFile(Paths.get(pathToFASTQListFile).toAbsolutePath().toString());
-        final JavaPairRDD<Long, URI> seqsArrangedByBreakpoints = rawFASTQFiles.mapToPair(RunSGAViaProcessBuilderOnSpark::assignFASTQToBreakpoints);
-        seqsArrangedByBreakpoints.filter(pair -> (pair._2()!=null));
-
-        // distribute/copy FASTA file to local disks and perform assembly (temp files live in temp dir that cleans self up automatically)
-        final JavaPairRDD<Long, PipeLineResult> assembledContigs = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(entry, sgaPath, runCorrectionSteps));
-
-        // validate the results returned: save FASTA file for breakpoints that successfully assembled, or save error messages it somewhere along the process things went wrong.
-        validateAndSaveResults(assembledContigs, outputDir);
-    }
-
-    /**
-     * Validates the returned result from running the local assembly pipeline:
-     *   if all steps executed successfully, the contig file is nonnull so we save the contig file and discard the runtime information
-     *   if any sga step returns non-zero code, the contig file is null so we save the runtime information for that break point
-     *   if any non-SGA steps erred, save the error message logged during the step.
-     * @param results       the local assembly result and its associated breakpoint ID
-     * @param outputDir     output directory to save the contigs (if assembly succeeded) or runtime info (if erred)
-     */
-    private static void validateAndSaveResults(final JavaPairRDD<Long, PipeLineResult> results, final String outputDir){
-
-        results.cache(); // cache because Spark doesn't have an efficient RDD.split(predicate) yet
-
-        final JavaPairRDD<Long, PipeLineResult> withoutNonSGAErrors = results.filter(entry -> entry._2().nonSGAStepsErrorMessages==null);
-
-        // everything went fine
-        final JavaPairRDD<Long, PipeLineResult> success = withoutNonSGAErrors.filter(entry -> entry._2().sgaStepsResult.assembledContigs!=null);
-        success.mapToPair(entry -> new Tuple2<>(entry._1(), entry._2().sgaStepsResult.assembledContigs))
-                .saveAsObjectFile(outputDir);
-
-        // sga parts failed
-        final JavaPairRDD<Long, PipeLineResult> sgaFailure = withoutNonSGAErrors.filter(entry -> entry._2().sgaStepsResult.assembledContigs==null);
-        sgaFailure.mapToPair(entry -> new Tuple2<>(entry._1(), entry._2().sgaStepsResult.collectiveRuntimeInfo))
-                .saveAsObjectFile(outputDir);
-
-        // nonSGA parts failed
-        final JavaPairRDD<Long, PipeLineResult> withNonSGAErrors = results.filter(entry -> entry._2().nonSGAStepsErrorMessages!=null);
-        withNonSGAErrors.mapToPair(entry -> new Tuple2<>(entry._1(), entry._2().nonSGAStepsErrorMessages))
-                .saveAsObjectFile(outputDir);
+        final int numOfErrMsgFiles = 10;
+        assembly.filter(entry -> !entry._2().isEmpty())
+                .repartition(numOfErrMsgFiles)
+                .saveAsTextFile(outputDir);
     }
 
     /**
@@ -145,13 +117,16 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * @param fastqOfABreakpoint    the breakpoint ID and URI to the FASTQ file
      * @param sgaPath               full path to SGA
      * @param runCorrections        user's decision to run SGA's corrections (with default parameter values) or not
-     * @return                      contig file (if process succeed) and runtime information, associated with the breakpoint ID
+     * @param hdfs                  HDFS file system
+     * @return                      failure message (if process erred) or empty string (if process succeeded) associated with the breakpoint ID
      * @throws IOException          if fails to create temporary directory on local filesystem or fails to copy FASTQ file
      */
     @VisibleForTesting
-    static Tuple2<Long, PipeLineResult> performAssembly(final Tuple2<Long, URI> fastqOfABreakpoint,
-                                                        final Path sgaPath,
-                                                        final boolean runCorrections)
+    static Tuple2<Long, String> performAssembly(final Tuple2<Long, URI> fastqOfABreakpoint,
+                                                final Path sgaPath,
+                                                final boolean runCorrections,
+                                                final FileSystem fs,
+                                                final String absPathToOutputDir)
     throws IOException{
 
         final Long breakpointID = fastqOfABreakpoint._1();
@@ -160,9 +135,15 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         final LocalFileSystem lfs = FileSystem.getLocal(new Configuration());
         final File localFASTQFile = makeTempDirAndCopyFASTQToLocal(lfs, uriToFASTQ, breakpointID);
 
-        final File tempWorkingDir = localFASTQFile.getParentFile();
-        final PipeLineResult assembledContigsFileAndRuntimeInfo = runSGAModulesInSerial(sgaPath, localFASTQFile, runCorrections);
-        return new Tuple2<>(breakpointID, assembledContigsFileAndRuntimeInfo);
+        final SGAAssemblyResult assembledContigsFileAndRuntimeInfo = runSGAModulesInSerial(sgaPath, localFASTQFile, runCorrections);
+
+        if(null!=assembledContigsFileAndRuntimeInfo.contigFileName) {
+            fs.copyFromLocalFile(new org.apache.hadoop.fs.Path(localFASTQFile.getParentFile().getAbsolutePath(), assembledContigsFileAndRuntimeInfo.contigFileName),
+                                 new org.apache.hadoop.fs.Path(absPathToOutputDir));
+            return new Tuple2<>(breakpointID, "");
+        }else{
+            return new Tuple2<>(breakpointID, assembledContigsFileAndRuntimeInfo.getRuntimeInfoAsString());
+        }
     }
 
     /**
@@ -196,9 +177,10 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * @return                  the result accumulated through running the pipeline, where the contigs could be null if the process erred.
      */
     @VisibleForTesting
-    static PipeLineResult runSGAModulesInSerial(final Path sgaPath,
-                                                final File rawFASTQFile,
-                                                final boolean runCorrections){
+    static SGAAssemblyResult runSGAModulesInSerial(final Path sgaPath,
+                                                   final File rawFASTQFile,
+                                                   final boolean runCorrections)
+    throws IOException{
 
         final File tempWorkingDir = rawFASTQFile.getParentFile();
 
@@ -214,8 +196,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
         String preppedFileName = runAndStopEarly("preprocess", rawFASTQFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
         if( null == preppedFileName ){
-            final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
-            return new PipeLineResult(sgaErred);
+            return new SGAAssemblyResult(null, runtimeInfo);
         }
 
         if(runCorrections){// correction, filter, and remove duplicates stringed together
@@ -223,49 +204,35 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
             preppedFileName = runAndStopEarly("correct", preprocessedFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
-                final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
-                return new PipeLineResult(sgaErred);
+                return new SGAAssemblyResult(null, runtimeInfo);
             }
             final File correctedFile = new File(tempWorkingDir, preppedFileName);
 
             preppedFileName = runAndStopEarly("filter", correctedFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
-                final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
-                return new PipeLineResult(sgaErred);
+                return new SGAAssemblyResult(null, runtimeInfo);
             }
             final File filterPassingFile = new File(tempWorkingDir, preppedFileName);
 
             preppedFileName = runAndStopEarly("rmdup", filterPassingFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
-                final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
-                return new PipeLineResult(sgaErred);
+                return new SGAAssemblyResult(null, runtimeInfo);
             }
         }
 
         final File fileToMerge      = new File(tempWorkingDir, preppedFileName);
         final String fileNameToAssemble = runAndStopEarly("fm-merge", fileToMerge, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
         if(null == fileNameToAssemble){
-            final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
-            return new PipeLineResult(sgaErred);
+            return new SGAAssemblyResult(null, runtimeInfo);
         }
 
         final File fileToAssemble   = new File(tempWorkingDir, fileNameToAssemble);
         final String contigsFileName = runAndStopEarly("assemble", fileToAssemble, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
         if(null == contigsFileName){
-            final SGAAssemblyResult sgaErred = new SGAAssemblyResult(null, runtimeInfo);
-            return new PipeLineResult(sgaErred);
+            return new SGAAssemblyResult(null, runtimeInfo);
         }
 
-        // if code reaches here, all steps in the SGA pipeline went smoothly,
-        // but the following conversion from File to ContigsCollection may still err
-        final File assembledContigsFile = new File(tempWorkingDir, contigsFileName);
-        try{
-            final List<String> contigsFASTAContents = (null==assembledContigsFile) ? null : Files.readAllLines(Paths.get(assembledContigsFile.getAbsolutePath()));
-            final SGAAssemblyResult sgaResults =  new SGAAssemblyResult(contigsFASTAContents, runtimeInfo);
-            return new PipeLineResult(sgaResults);
-        }catch(final IOException ex){ // failed to parse contigs file
-            return new PipeLineResult("Successfully executed sga processes, but failed to parse the resulting FASTA file.");
-        }
+        return new SGAAssemblyResult(contigsFileName, runtimeInfo);
     }
 
     /**
@@ -439,10 +406,9 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
         return outputFileName;
     }
-
     /**
      * Final return type of the whole process of SGA local assembly.
-     * assembledContigFile is the file containing the assembled contigs, if the process executed successfully, or null if not.
+     * contigFileName is the name of the final FASTA file where the assembled contigs live, if the process executed successfully, or null if not.
      * runtimeInformation contains the runtime information logged along the process up until the process erred, if errors happen,
      *   or until the last step if no errors occur along the line.
      *   The list is organized along the process of executing the assembly pipeline.
@@ -451,76 +417,24 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     static final class SGAAssemblyResult implements Serializable{
         private static final long serialVersionUID = 1L;
 
-        public final ContigsCollection assembledContigs;
+        public final String contigFileName;
         public final List<SGAModule.RuntimeInfo> collectiveRuntimeInfo;
 
-        public SGAAssemblyResult(final List<String> fastaContents, final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
-            this.assembledContigs      = new ContigsCollection(fastaContents);
-            this.collectiveRuntimeInfo = collectedRuntimeInfo;
-        }
-    }
-
-    /**
-     * Representing results on the whole calling SGA on spark pipeline.
-     * If nonSGAStepsErrorMessages is non-null, then sgaStepsResult must be null.
-     *   This could be because the pipeline erred before SGA modules are called, or erred after SGA modules successfully
-     *   did their job but somewhere else along the pipeline things went wrong.
-     * This class constructed with a nonSGA related String message is used to store the error message.
-     */
-    static final class PipeLineResult implements Serializable{
-        private static final long serialVersionUID = 1L;
-
-        public final SGAAssemblyResult sgaStepsResult;
-        public final String nonSGAStepsErrorMessages;
-
-        public PipeLineResult(final SGAAssemblyResult sgaStepsResult){
-            this.sgaStepsResult = sgaStepsResult;
-            nonSGAStepsErrorMessages = null;
+        public SGAAssemblyResult(final String contigFileName, final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
+            this.contigFileName         = contigFileName;
+            this.collectiveRuntimeInfo  = collectedRuntimeInfo;
         }
 
-        public PipeLineResult(final String nonSGAErrorMsg){
-            this.sgaStepsResult = null;
-            this.nonSGAStepsErrorMessages = nonSGAErrorMsg;
-        }
-    }
-
-    /**
-     * Represents a collection of assembled contigs (not including the variants) produced by "sga assemble".
-     */
-    @VisibleForTesting
-    static final class ContigsCollection implements Serializable{
-        private static final long serialVersionUID = 1L;
-
-        @VisibleForTesting
-        static final class ContigSequence implements Serializable{
-            private static final long serialVersionUID = 1L;
-
-            private final String sequence;
-            public ContigSequence(final String sequence){ this.sequence = sequence; }
-            public String getSequenceAsString(){ return sequence; }
-        }
-
-        @VisibleForTesting
-        static final class ContigID implements Serializable{
-            private static final long serialVersionUID = 1L;
-
-            private final String id;
-            public ContigID(final String idString) { this.id = idString; }
-            public String getId() { return id; }
-        }
-
-        private final List<Tuple2<ContigID, ContigSequence>> contents;
-
-        public List<Tuple2<ContigID, ContigSequence>> getContents(){
-            return contents;
-        }
-
-        public ContigsCollection(final List<String> fileContents){
-
-            contents = new ArrayList<>();
-            for(int i=0; i<fileContents.size(); i+=2){
-                contents.add(new Tuple2<>(new ContigID(fileContents.get(i)), new ContigSequence(fileContents.get(i+1))));
+        /**
+         * Returns the message accumulated.
+         * @return
+         */
+        public String getRuntimeInfoAsString(){
+            String msg = "";
+            for(final SGAModule.RuntimeInfo info : collectiveRuntimeInfo){
+                msg += info.toString();
             }
+            return msg;
         }
     }
 }
