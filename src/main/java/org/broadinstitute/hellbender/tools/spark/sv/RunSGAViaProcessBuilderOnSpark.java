@@ -25,7 +25,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 // TODO: choose which parameters allowed to be tunable
-// TODO: if throws, would temp files be cleaned up automatically?
 // TODO: choose output contents (currently output information is more developer friendly than user friendly)
 @CommandLineProgramProperties(
         summary        = "Program to call SGA to perform local assembly and return assembled contigs if successful, " +
@@ -117,9 +116,9 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * @param fastqOfABreakpoint    the breakpoint ID and URI to the FASTQ file
      * @param sgaPath               full path to SGA
      * @param runCorrections        user's decision to run SGA's corrections (with default parameter values) or not
-     * @param hdfs                  HDFS file system
+     * @param fs                    file system
      * @return                      failure message (if process erred) or empty string (if process succeeded) associated with the breakpoint ID
-     * @throws IOException          if fails to create temporary directory on local filesystem or fails to copy FASTQ file
+     * @throws IOException          if fails to create temporary directory on local filesystem or fails to copy FASTQ/FASTA file from/to fs
      */
     @VisibleForTesting
     static Tuple2<Long, String> performAssembly(final Tuple2<Long, URI> fastqOfABreakpoint,
@@ -163,7 +162,12 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         final String rawFASTQFileName = FilenameUtils.getName(uriToFASTQ.getPath());
         final org.apache.hadoop.fs.Path from = new org.apache.hadoop.fs.Path(uriToFASTQ);
         final org.apache.hadoop.fs.Path to   = new org.apache.hadoop.fs.Path(workingDir.toPath().toAbsolutePath().toString()+"/"+rawFASTQFileName);
-        lfs.copyToLocalFile(from, to);
+        try{
+            lfs.copyToLocalFile(from, to);
+        }catch(final IOException ex){ // make sure the temp dir is deleted in case of exception
+            workingDir.delete();
+            throw new IOException(ex);
+        }
         final File localFile = lfs.pathToFile(to);
         return localFile;
     }
@@ -179,8 +183,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     @VisibleForTesting
     static SGAAssemblyResult runSGAModulesInSerial(final Path sgaPath,
                                                    final File rawFASTQFile,
-                                                   final boolean runCorrections)
-    throws IOException{
+                                                   final boolean runCorrections){
 
         final File tempWorkingDir = rawFASTQFile.getParentFile();
 
