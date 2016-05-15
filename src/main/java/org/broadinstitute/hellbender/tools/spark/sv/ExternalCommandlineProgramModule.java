@@ -55,7 +55,7 @@ public abstract class ExternalCommandlineProgramModule {
                 case STARTFAIL:
                     result += " failed to start."; break;
                 case INTERRUPTION:
-                    result += " was interrupted.";
+                    result += " was interrupted."; break;
                 case STDIOFAIL:
                     result += " stdout and stderr wasn't successfully captured."; break;
                 case PGFAIL:

@@ -116,7 +116,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * @param fastqOfABreakpoint    the breakpoint ID and URI to the FASTQ file
      * @param sgaPath               full path to SGA
      * @param runCorrections        user's decision to run SGA's corrections (with default parameter values) or not
-     * @param fs                    file system
+     * @param fs                    file system to copy results to
      * @return                      failure message (if process erred) or empty string (if process succeeded) associated with the breakpoint ID
      * @throws IOException          if fails to create temporary directory on local filesystem or fails to copy FASTQ/FASTA file from/to fs
      */
@@ -147,10 +147,10 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
     /**
      * Copy from hdfs to temp local dir
-     * @param lfs            local filesystem
+     * @param lfs           local filesystem
      * @param uriToFASTQ    uri to source
      * @param breakpointID  breakpoint ID
-     * @return              Path to the copied FASTQ file living in the temp local dir
+     * @return              the copied FASTQ file living in the temp local dir
      * @throws IOException  if fails to either create the temporary directory or copy the FASTQ file
      */
     @VisibleForTesting
@@ -168,17 +168,16 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
             workingDir.delete();
             throw new IOException(ex);
         }
-        final File localFile = lfs.pathToFile(to);
-        return localFile;
+        return lfs.pathToFile(to);
     }
 
     /**
      * Linear pipeline for running the SGA local assembly process on a particular FASTQ file for its associated putative breakpoint.
      *
      * @param sgaPath           full path on the executors to the SGA program
-     * @param rawFASTQFile      FASTQ file in temp local working dir
+     * @param rawFASTQFile      local FASTQ file living in a temp local working dir
      * @param runCorrections    to run SGA correction steps--correct, filter, rmdup, merge--or not
-     * @return                  the result accumulated through running the pipeline, where the contigs could be null if the process erred.
+     * @return                  the result accumulated through running the pipeline, where the contigs file name could be null if the process erred.
      */
     @VisibleForTesting
     static SGAAssemblyResult runSGAModulesInSerial(final Path sgaPath,
@@ -409,6 +408,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
         return outputFileName;
     }
+
     /**
      * Final return type of the whole process of SGA local assembly.
      * contigFileName is the name of the final FASTA file where the assembled contigs live, if the process executed successfully, or null if not.
