@@ -53,8 +53,6 @@ public abstract class ExternalCommandlineProgramModule {
             String result = "";
             result += moduleName;
             switch (returnStatus){
-                case SUCCESS:
-                    result += " successfully executed.";
                 case STARTFAIL:
                     result += " failed to start.";
                 case INTERRUPTION:
@@ -63,6 +61,8 @@ public abstract class ExternalCommandlineProgramModule {
                     result += " stdout and stderr wasn't successfully captured.";
                 case PGFAIL:
                     result += " returned with non-zero exit status, see stderr message for detailed return status.";
+                default://SUCCESS
+                    result += " successfully executed.";
             }
             if(null!=stdoutMsg || !stdoutMsg.isEmpty()){
                 result +=  "Module stdout message: ";
