@@ -198,7 +198,6 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                 .mapPartitions(readItr ->
                         new MapPartitioner<>(readItr,
                                 new QNamesForKmersFinder(broadcastKmerAndIntervalsSet.value())), false)
-                .distinct()
                 .collect();
 
         broadcastKmerAndIntervalsSet.destroy();
