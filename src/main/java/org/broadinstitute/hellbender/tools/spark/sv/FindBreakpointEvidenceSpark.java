@@ -998,8 +998,8 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         }
 
         public Iterable<Tuple2<Integer, List<byte[]>>> call( final Iterator<GATKRead> readsItr ) {
-            @SuppressWarnings("unchecked")
-            final List<byte[]>[] intervalReads = (List<byte[]>[])new List[nIntervals];
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            final List<byte[]>[] intervalReads = new List[nIntervals];
             int nPopulatedIntervals = 0;
             while ( readsItr.hasNext() ) {
                 final GATKRead read = readsItr.next();
