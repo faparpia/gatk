@@ -74,10 +74,9 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
         final JavaPairRDD<Long, String> assembly = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(entry, pathToSGA, runCorrectionSteps, outputDir));
 
-        final int numOfErrMsgFiles = 10;
-        assembly.filter(entry -> !entry._2().isEmpty())
-                .repartition(numOfErrMsgFiles)
-                .saveAsTextFile(outputDir);
+        final JavaPairRDD<Long, String> erred = assembly.filter(entry -> !entry._2().isEmpty());
+        final long numErred = erred.count();
+        erred.repartition((int)Math.min(numErred, 10)).saveAsTextFile(outputDir);
     }
 
     /**
