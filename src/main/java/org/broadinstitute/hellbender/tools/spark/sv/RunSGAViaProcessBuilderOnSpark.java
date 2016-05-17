@@ -72,16 +72,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         final JavaPairRDD<Long, URI> seqsArrangedByBreakpoints = rawFASTQFiles.mapToPair(RunSGAViaProcessBuilderOnSpark::assignFASTQToBreakpoints);
         seqsArrangedByBreakpoints.filter(pair -> (pair._2()!=null));
 
-        // distribute/copy FASTQ file to local disks and perform assembly (temp files live in temp dir that cleans self up automatically)
-        // then copy the resulted FASTA contig file back to the designated outputDir
-        FileSystem proxy = null;
-        try{
-            proxy = FileSystem.get( ctx.hadoopConfiguration() );
-        }catch (final IOException ex){
-            throw new UserException("Cannot get configuration."); // Any better exception?
-        }
-        final FileSystem fs = proxy;
-        final JavaPairRDD<Long, String> assembly = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(entry, pathToSGA, runCorrectionSteps, fs, outputDir));
+        final JavaPairRDD<Long, String> assembly = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(entry, pathToSGA, runCorrectionSteps, outputDir));
 
         final int numOfErrMsgFiles = 10;
         assembly.filter(entry -> !entry._2().isEmpty())
@@ -114,7 +105,6 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * @param fastqOfABreakpoint    the breakpoint ID and URI to the FASTQ file
      * @param sgaPath               full path to SGA
      * @param runCorrections        user's decision to run SGA's corrections (with default parameter values) or not
-     * @param fs                    file system to copy results to
      * @return                      failure message (if process erred) or empty string (if process succeeded) associated with the breakpoint ID
      * @throws IOException          if fails to create temporary directory on local filesystem or fails to copy FASTQ/FASTA file from/to fs
      */
@@ -122,7 +112,6 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     static Tuple2<Long, String> performAssembly(final Tuple2<Long, URI> fastqOfABreakpoint,
                                                 final String sgaPath,
                                                 final boolean runCorrections,
-                                                final FileSystem fs,
                                                 final String absPathToOutputDir)
     throws IOException{
 
@@ -135,8 +124,8 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         final SGAAssemblyResult assembledContigsFileAndRuntimeInfo = runSGAModulesInSerial(sgaPath, localFASTQFile, runCorrections);
 
         if(null!=assembledContigsFileAndRuntimeInfo.contigFileName) {
-            fs.copyFromLocalFile(new org.apache.hadoop.fs.Path(localFASTQFile.getParentFile().getAbsolutePath(), assembledContigsFileAndRuntimeInfo.contigFileName),
-                                 new org.apache.hadoop.fs.Path(absPathToOutputDir));
+            lfs.copyFromLocalFile(new org.apache.hadoop.fs.Path(localFASTQFile.getParentFile().getAbsolutePath(), assembledContigsFileAndRuntimeInfo.contigFileName),
+                                  new org.apache.hadoop.fs.Path(absPathToOutputDir));
             return new Tuple2<>(breakpointID, "");
         }else{
             return new Tuple2<>(breakpointID, assembledContigsFileAndRuntimeInfo.getRuntimeInfoAsString());

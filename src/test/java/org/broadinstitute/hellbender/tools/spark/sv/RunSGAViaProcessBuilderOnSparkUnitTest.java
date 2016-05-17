@@ -86,13 +86,12 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
     @Test(groups = "sv")
     public void assemblyOneStepTest() throws IOException, InterruptedException, RuntimeException{
 
-        final FileSystem fs = FileSystem.get( new Configuration() );
         final File outDir = Files.createTempDirectory( "whatever").toAbsolutePath().toFile();
         outDir.deleteOnExit();
 
         for(final Tuple2<Long, URI> breakpoint : rawFASTQFiles){
 
-            final String failureMsg = RunSGAViaProcessBuilderOnSpark.performAssembly(breakpoint, sgaPath.toAbsolutePath().toString(), true, fs, outDir.getAbsolutePath())._2();
+            final String failureMsg = RunSGAViaProcessBuilderOnSpark.performAssembly(breakpoint, sgaPath.toAbsolutePath().toString(), true, outDir.getAbsolutePath())._2();
             Assert.assertTrue(failureMsg.isEmpty());
 
             final File expectedAssembledContigFile = new File( expectedAssembledFASTAFiles.get(breakpoint._1()) );
