@@ -92,7 +92,7 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
 
         for(final Tuple2<Long, URI> breakpoint : rawFASTQFiles){
 
-            final String failureMsg = RunSGAViaProcessBuilderOnSpark.performAssembly(breakpoint, sgaPath, true, fs, outDir.getAbsolutePath())._2();
+            final String failureMsg = RunSGAViaProcessBuilderOnSpark.performAssembly(breakpoint, sgaPath.toAbsolutePath().toString(), true, fs, outDir.getAbsolutePath())._2();
             Assert.assertTrue(failureMsg.isEmpty());
 
             final File expectedAssembledContigFile = new File( expectedAssembledFASTAFiles.get(breakpoint._1()) );

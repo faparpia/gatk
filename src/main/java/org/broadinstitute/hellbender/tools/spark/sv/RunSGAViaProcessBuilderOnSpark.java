@@ -67,8 +67,6 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     @Override
     public void runTool(final JavaSparkContext ctx){
 
-        final Path sgaPath = Paths.get(pathToSGA);
-
         // first load RDD of pair that has breakpoint ID as its first and URI to FASTQ file as its second
         final JavaRDD<String> rawFASTQFiles = ctx.textFile(Paths.get(pathToFASTQListFile).toAbsolutePath().toString());
         final JavaPairRDD<Long, URI> seqsArrangedByBreakpoints = rawFASTQFiles.mapToPair(RunSGAViaProcessBuilderOnSpark::assignFASTQToBreakpoints);
@@ -83,7 +81,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
             throw new UserException("Cannot get configuration."); // Any better exception?
         }
         final FileSystem fs = proxy;
-        final JavaPairRDD<Long, String> assembly = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(entry, sgaPath, runCorrectionSteps, fs, outputDir));
+        final JavaPairRDD<Long, String> assembly = seqsArrangedByBreakpoints.mapToPair(entry -> performAssembly(entry, pathToSGA, runCorrectionSteps, fs, outputDir));
 
         final int numOfErrMsgFiles = 10;
         assembly.filter(entry -> !entry._2().isEmpty())
@@ -122,7 +120,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      */
     @VisibleForTesting
     static Tuple2<Long, String> performAssembly(final Tuple2<Long, URI> fastqOfABreakpoint,
-                                                final Path sgaPath,
+                                                final String sgaPath,
                                                 final boolean runCorrections,
                                                 final FileSystem fs,
                                                 final String absPathToOutputDir)
@@ -180,9 +178,11 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      * @return                  the result accumulated through running the pipeline, where the contigs file name could be null if the process erred.
      */
     @VisibleForTesting
-    static SGAAssemblyResult runSGAModulesInSerial(final Path sgaPath,
+    static SGAAssemblyResult runSGAModulesInSerial(final String sgaPath,
                                                    final File rawFASTQFile,
                                                    final boolean runCorrections){
+
+        final Path sga = Paths.get(sgaPath);
 
         final File tempWorkingDir = rawFASTQFile.getParentFile();
 
@@ -196,7 +196,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         // collect runtime information along the way
         final List<SGAModule.RuntimeInfo> runtimeInfo = new ArrayList<>();
 
-        String preppedFileName = runAndStopEarly("preprocess", rawFASTQFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
+        String preppedFileName = runAndStopEarly("preprocess", rawFASTQFile, sga, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
         if( null == preppedFileName ){
             return new SGAAssemblyResult(null, runtimeInfo);
         }
@@ -204,32 +204,32 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         if(runCorrections){// correction, filter, and remove duplicates stringed together
             final File preprocessedFile = new File(tempWorkingDir, preppedFileName);
 
-            preppedFileName = runAndStopEarly("correct", preprocessedFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
+            preppedFileName = runAndStopEarly("correct", preprocessedFile, sga, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
                 return new SGAAssemblyResult(null, runtimeInfo);
             }
             final File correctedFile = new File(tempWorkingDir, preppedFileName);
 
-            preppedFileName = runAndStopEarly("filter", correctedFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
+            preppedFileName = runAndStopEarly("filter", correctedFile, sga, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
                 return new SGAAssemblyResult(null, runtimeInfo);
             }
             final File filterPassingFile = new File(tempWorkingDir, preppedFileName);
 
-            preppedFileName = runAndStopEarly("rmdup", filterPassingFile, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
+            preppedFileName = runAndStopEarly("rmdup", filterPassingFile, sga, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
             if( null == preppedFileName ){
                 return new SGAAssemblyResult(null, runtimeInfo);
             }
         }
 
         final File fileToMerge      = new File(tempWorkingDir, preppedFileName);
-        final String fileNameToAssemble = runAndStopEarly("fm-merge", fileToMerge, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
+        final String fileNameToAssemble = runAndStopEarly("fm-merge", fileToMerge, sga, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
         if(null == fileNameToAssemble){
             return new SGAAssemblyResult(null, runtimeInfo);
         }
 
         final File fileToAssemble   = new File(tempWorkingDir, fileNameToAssemble);
-        final String contigsFileName = runAndStopEarly("assemble", fileToAssemble, sgaPath, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
+        final String contigsFileName = runAndStopEarly("assemble", fileToAssemble, sga, tempWorkingDir, indexer, indexerArgs, runtimeInfo);
         if(null == contigsFileName){
             return new SGAAssemblyResult(null, runtimeInfo);
         }
