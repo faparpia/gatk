@@ -50,25 +50,25 @@ public abstract class ExternalCommandlineProgramModule {
         // for parsing contents to human readable string
         @Override
         public String toString(){
-            String result = moduleName;
+            String result = moduleName + "\n";
             switch (returnStatus){
                 case STARTFAIL:
-                    result += " failed to start."; break;
+                    result += " failed to start.\n"; break;
                 case INTERRUPTION:
-                    result += " was interrupted."; break;
+                    result += " was interrupted.\n"; break;
                 case STDIOFAIL:
-                    result += " stdout and stderr wasn't successfully captured."; break;
+                    result += " stdout and stderr wasn't successfully captured.\n"; break;
                 case PGFAIL:
-                    result += " returned with non-zero exit status, see stderr message for detailed return status."; break;
+                    result += " returned with non-zero exit status, see stderr message for detailed return status.\n"; break;
                 default://SUCCESS
-                    result += " successfully executed.";
+                    result += " successfully executed.\n";
             }
             if(null!=stdoutMsg || !stdoutMsg.isEmpty()){
-                result += " Module stdout message: ";
+                result += " Module stdout message: \n";
                 result += stdoutMsg;
             }
             if(null!=stderrMsg || !stderrMsg.isEmpty()){
-                result += " Module stderr message: ";
+                result += " Module stderr message: \n";
                 result += stderrMsg;
             }
             return result;

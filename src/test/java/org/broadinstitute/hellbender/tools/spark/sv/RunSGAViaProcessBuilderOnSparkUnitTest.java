@@ -5,8 +5,6 @@ import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.StringUtils;
 import htsjdk.samtools.fastq.FastqReader;
 import htsjdk.samtools.fastq.FastqRecord;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.*;
 import org.broadinstitute.hellbender.CommandLineProgramTest;
 import org.broadinstitute.hellbender.utils.BaseUtils;
 import org.testng.Assert;
@@ -17,7 +15,6 @@ import org.testng.annotations.Test;
 import scala.Tuple2;
 
 import java.io.*;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,10 +33,9 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
     private static final SGAModule indexer = new SGAModule("index");
 
     // data block
-    private static final File TEST_DATA_DIR = new File(getTestDataDir(), "spark/sv/RunSGAViaProcessBuilderOnSpark/");
-
-    private static List<Tuple2<Long, URI>> rawFASTQFiles;
-    private static Map<Long, URI> expectedAssembledFASTAFiles;
+    private static File TEST_DATA_DIR;
+    private static List<Tuple2<Long, File>> rawFASTQFiles;
+    private static Map<Long, File> expectedAssembledFASTAFiles;
 
     // parameter block
     private static final int lengthDiffTolerance = 1;   // tolerance on how much of a difference can each pair of assembled contigs (actual vs expected) length could be
@@ -47,77 +43,86 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
 
     // set up path and data
     @BeforeClass
-    private static void setup(){
+    private static void setup() throws IOException{
         String sgaPathString = System.getProperty("path.to.sga");
         if(null==sgaPathString){
             sgaPathString = System.getenv("path.to.sga");
         }
         sgaPath =  (null==sgaPathString) ? null : Paths.get(sgaPathString);
 
+        if(null==sgaPath){ // early return if SGA isn't available for these tests
+            return;
+        }
+
         rawFASTQFiles = new ArrayList<>();
         expectedAssembledFASTAFiles = new HashMap<>();
 
+        final File original_test_data_dir = new File(getTestDataDir(), "spark/sv/RunSGAViaProcessBuilderOnSpark/");
+        TEST_DATA_DIR = Files.createTempDirectory( "whatever" ).toAbsolutePath().toFile();
+        TEST_DATA_DIR.deleteOnExit();
+        FileUtils.copyDirectory(original_test_data_dir, TEST_DATA_DIR);
+
         Long i = 0L;
 
-        final String[] extension = new String[1];
+        final String[] extension = new String[1]; // look for FASTQ files in test data dir
         extension[0] = "fastq";
 
         final Iterator<File> it = FileUtils.iterateFiles(TEST_DATA_DIR, extension, false);
 
         while(it.hasNext()){
 
-            final String fastqFileName = it.next().getAbsolutePath().toString();
-            final Tuple2<Long, URI> breakpoint = RunSGAViaProcessBuilderOnSpark.assignFASTQToBreakpoints(String.valueOf(i) + "\t" + Paths.get(fastqFileName).toUri());
-            rawFASTQFiles.add(breakpoint);
+            final File fastqFile = it.next();
+            rawFASTQFiles.add(new Tuple2<>(i, fastqFile));
 
-            final String contigFileName = fastqFileName.replace("fastq", "pp.ec.filter.pass.rmdup.merged-contigs.fa");
-            expectedAssembledFASTAFiles.put(i++, Paths.get(contigFileName).toUri());
+            final File contigFile = new File(fastqFile.getParentFile(), fastqFile.getName().replace("fastq", "pp.ec.filter.pass.rmdup.merged-contigs.fa"));
+            expectedAssembledFASTAFiles.put(i++, contigFile);
         }
     }
 
     @BeforeMethod
-    public static void checkPATHTOSGAAvailability(){
-
+    private static void checkPathToSGAAvailability(){
         if(null==sgaPath){
             throw new SkipException("Skipping test because \"-Dpath.to.sga\" is set neither in system property nor as an environment variable.");
         }
     }
 
     @Test(groups = "sv")
-    public void assemblyOneStepTest() throws IOException, InterruptedException, RuntimeException{
+    public void writeToLocalTest() throws IOException{
+        final File originalFASTQFile = rawFASTQFiles.get(0)._2();
+        final String pathToFile = originalFASTQFile.toURI().toString();
+        final String fileContents = StringUtils.join(FileUtils.readLines(originalFASTQFile, StandardCharsets.UTF_8), "\n");
+        final Tuple2<Long, File> copied = RunSGAViaProcessBuilderOnSpark.writeToLocal(new Tuple2<>(pathToFile, fileContents), ".raw");
+        Assert.assertTrue( FileUtils.contentEqualsIgnoreEOL(copied._2(), originalFASTQFile, StandardCharsets.UTF_8.name()) );
+    }
 
-        final File outDir = Files.createTempDirectory( "whatever").toAbsolutePath().toFile();
-        outDir.deleteOnExit();
+    @Test(groups = "sv")
+    public void assemblyOneStepTest() throws IOException{
 
-        for(final Tuple2<Long, URI> breakpoint : rawFASTQFiles){
+        for(final Tuple2<Long, File> breakpoint : rawFASTQFiles){
 
-            final String failureMsg = RunSGAViaProcessBuilderOnSpark.performAssembly(breakpoint, sgaPath.toAbsolutePath().toString(), true, outDir.getAbsolutePath())._2();
-            Assert.assertTrue(failureMsg.isEmpty());
+            final RunSGAViaProcessBuilderOnSpark.SGAAssemblyResult result = RunSGAViaProcessBuilderOnSpark.runSGAModulesInSerial(sgaPath.toAbsolutePath().toString(), breakpoint._2(), true);
 
-            final File expectedAssembledContigFile = new File( expectedAssembledFASTAFiles.get(breakpoint._1()) );
-            final File actualAssembledContigFile   = new File(outDir, expectedAssembledContigFile.getName());
+            Assert.assertTrue(result.assembledContigs!=null);
 
-            compareContigs(actualAssembledContigFile, expectedAssembledContigFile);
+            final List<String> actualAssembledContigs = result.assembledContigs.toListOfStrings();
+            final List<String> expectedAssembledContigs = FileUtils.readLines(expectedAssembledFASTAFiles.get(breakpoint._1()), StandardCharsets.UTF_8);
+
+            compareContigs(actualAssembledContigs, expectedAssembledContigs);
         }
     }
 
     @Test(groups = "sv")
-    public void assemblyStepByStepTest() throws IOException, InterruptedException, RuntimeException{
+    public void assemblyStepByStepTest() throws IOException{
 
-        for(final Tuple2<Long, URI> breakpoint : rawFASTQFiles){
+        for(final Tuple2<Long, File> breakpoint : rawFASTQFiles){
 
-            //prep: make temp dir, copy file
-            final LocalFileSystem lfs = FileSystem.getLocal(new Configuration());
+            final File expectedAssembledContigsFile = expectedAssembledFASTAFiles.get(breakpoint._1());
 
-            final File rawFASTQFile = RunSGAViaProcessBuilderOnSpark.makeTempDirAndCopyFASTQToLocal(lfs, breakpoint._2(), breakpoint._1());
-
-            final File expectedAssembledContigFile = new File( expectedAssembledFASTAFiles.get(breakpoint._1()) );
-
-            stepByStepTestWorker(rawFASTQFile, expectedAssembledContigFile);
+            stepByStepTestWorker(breakpoint._2(), expectedAssembledContigsFile);
         }
     }
 
-    private static void stepByStepTestWorker(final File rawFASTQFile, final File expectedAssembledContigFile) throws IOException, InterruptedException, RuntimeException{
+    private static void stepByStepTestWorker(final File rawFASTQFile, final File expectedAssembledContigsFile) throws IOException{
 
         final File workingDir = rawFASTQFile.getParentFile();
         final List<SGAModule.RuntimeInfo> runtimeInfo = new ArrayList<>();
@@ -168,16 +173,14 @@ public class RunSGAViaProcessBuilderOnSparkUnitTest extends CommandLineProgramTe
         // final assembled contig test
         final File mergedFile = new File(workingDir, mergedFileName);
         final File actualAssembledContigsFile = new File(workingDir, RunSGAViaProcessBuilderOnSpark.runSGAOverlapAndAssemble(sgaPath, mergedFile, workingDir, runtimeInfo));
+        final List<String> actualAssembledContigs   = (null==actualAssembledContigsFile  ) ? null : Files.readAllLines(Paths.get(actualAssembledContigsFile.getAbsolutePath()  ));
+        final List<String> expectedAssembledContigs   = (null==expectedAssembledContigsFile  ) ? null : Files.readAllLines(Paths.get(expectedAssembledContigsFile.getAbsolutePath()  ));
 
-        compareContigs(actualAssembledContigsFile, expectedAssembledContigFile);
+        compareContigs(actualAssembledContigs, expectedAssembledContigs);
     }
 
-    private static void compareContigs(final File actualAssembledContigFile,
-                                       final File expectedAssembledContigFile)
-            throws IOException, InterruptedException{
-
-        final List<String> actualFASTAContents   = (null==actualAssembledContigFile  ) ? null : Files.readAllLines(Paths.get(actualAssembledContigFile.getAbsolutePath()  ));
-        final List<String> expectedFASTAContents = (null==expectedAssembledContigFile) ? null : Files.readAllLines(Paths.get(expectedAssembledContigFile.getAbsolutePath()));
+    private static void compareContigs(final List<String> actualFASTAContents,
+                                       final List<String> expectedFASTAContents){
 
         // first create mapping from read length to sequence
         // (bad, but contig names are not guaranteed to be reproducible in different runs)
