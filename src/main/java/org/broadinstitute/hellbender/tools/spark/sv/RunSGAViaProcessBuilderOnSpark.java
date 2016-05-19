@@ -19,7 +19,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
 // TODO: choose which parameters allowed to be tunable
 // TODO: choose output contents (currently output information is more developer friendly than user friendly)
@@ -38,24 +37,24 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     public String pathToSGA = null;
 
     @Argument(doc       = "An URI to the directory where all interleaved FASTQ files for putative breakpoints are located.",
-              shortName = "fl",
-              fullName  = "fastqList",
+              shortName = "in",
+              fullName  = "inDir",
               optional  = false)
     public String pathToAllInterleavedFASTQFiles = null;
 
     @Argument(doc       = "A substring in the FASTQ file names that needs to be stripped out for retrieving the breakpoint ID",
-              shortName = "s",
-              fullName  = "sub",
+              shortName = "subOut",
+              fullName  = "subStringToStrip",
               optional  = false)
-    public String substrToStripout = null;
+    public String subStringToStrip = null;
 
     @Argument(doc       = "An URI (prefix) to a directory to write results to. " +
                           "Breakpoints where local assembly were successful are saved in a directory prefix_0," +
                           "breakpoints where local assembly failed are saved in directory prefix_1",
-              shortName = "outDir",
-              fullName  = "outputDirectory",
+              shortName = "out",
+              fullName  = "outDirPrefix",
               optional  = false)
-    public String outputDir = null;
+    public String outDirPrefix = null;
 
     @Argument(doc       = "To run k-mer based read correction, filter and duplication removal in SGA or not, with default parameters.",
               shortName = "correct",
@@ -70,9 +69,9 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         // first load RDD of pair that has path to FASTQ file path as its first and FASTQ file contents as its second
         JavaPairRDD<String, String> fastqContentsForEachBreakpoint = ctx.wholeTextFiles(pathToAllInterleavedFASTQFiles);
 
-        final JavaPairRDD<Long, SGAAssemblyResult> assembly = fastqContentsForEachBreakpoint.mapToPair(entry -> performAssembly(entry, substrToStripout, pathToSGA, runCorrectionSteps));
+        final JavaPairRDD<Long, SGAAssemblyResult> assembly = fastqContentsForEachBreakpoint.mapToPair(entry -> performAssembly(entry, subStringToStrip, pathToSGA, runCorrectionSteps));
 
-        validateAndSaveResults(assembly, outputDir, 10, 10);
+        validateAndSaveResults(assembly, outDirPrefix, 10, 10);
     }
 
     /**
@@ -98,12 +97,12 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         final long numSucced = success.count();
         success.map(entry -> entry._1().toString() + "\n" + entry._2().assembledContigs.toString())
                 .repartition((int)Math.min(numSucced, succNumPartition))
-                .saveAsTextFile(outputDir);
+                .saveAsTextFile(outputDir+"_0");
 
         final long numErred = failure.count();
         failure.map(entry ->  entry._1().toString() + "\n" + entry._2().collectiveRuntimeInfo.toString())
                 .repartition((int)Math.min(numErred, erredNumPartition))
-                .saveAsTextFile(outputDir);
+                .saveAsTextFile(outputDir+"_1");
     }
 
     /**
