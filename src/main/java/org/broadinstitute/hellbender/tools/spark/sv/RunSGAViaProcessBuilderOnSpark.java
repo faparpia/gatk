@@ -94,14 +94,14 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         final JavaPairRDD<Long, SGAAssemblyResult> success = results.filter(entry -> entry._2().assembledContigs!=null);
         final JavaPairRDD<Long, SGAAssemblyResult> failure = results.filter(entry -> entry._2().assembledContigs==null);
 
-        final long numSucced = success.count();
+        //final long numSucced = success.count();
         success.map(entry -> entry._1().toString() + "\n" + entry._2().assembledContigs.toString())
-                .repartition((int)Math.min(numSucced, succNumPartition))
+                //.repartition((int)Math.min(numSucced, succNumPartition))
                 .saveAsTextFile(outputDir+"_0");
 
-        final long numErred = failure.count();
+        //final long numErred = failure.count();
         failure.map(entry ->  entry._1().toString() + "\n" + entry._2().collectiveRuntimeInfo.toString())
-                .repartition((int)Math.min(numErred, erredNumPartition))
+                //.repartition((int)Math.min(numErred, erredNumPartition))
                 .saveAsTextFile(outputDir+"_1");
     }
 
