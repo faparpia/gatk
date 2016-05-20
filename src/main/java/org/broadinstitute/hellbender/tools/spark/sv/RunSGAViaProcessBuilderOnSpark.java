@@ -43,7 +43,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
     public String pathToAllInterleavedFASTQFiles = null;
 
     @Argument(doc       = "A substring in the FASTQ file names that needs to be stripped out for retrieving the breakpoint ID",
-              shortName = "subOut",
+              shortName = "scrub",
               fullName  = "subStringToStrip",
               optional  = false)
     public String subStringToStrip = null;
@@ -71,7 +71,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
 
         final JavaPairRDD<Long, SGAAssemblyResult> assembly = fastqContentsForEachBreakpoint.mapToPair(entry -> performAssembly(entry, subStringToStrip, pathToSGA, runCorrectionSteps));
 
-        validateAndSaveResults(assembly, outDirPrefix, 10, 10);
+        validateAndSaveResults(assembly, outDirPrefix);
     }
 
     /**
@@ -81,34 +81,30 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      *   if any non-SGA steps erred, save the error message logged during the step.
      * @param results       the local assembly result and its associated breakpoint ID
      * @param outputDir     output directory to save the contigs (if assembly succeeded) or runtime info (if erred)
-     * @param succNumPartition  the number of partitions, i.e. files, for logging the fasta file contents
-     * @param erredNumPartition the number of partitions, i.e. files, for logging error messages
      */
-    private static void validateAndSaveResults(final JavaPairRDD<Long, SGAAssemblyResult> results,
-                                               final String outputDir,
-                                               final int succNumPartition,
-                                               final int erredNumPartition){
+    private static void validateAndSaveResults(final JavaPairRDD<Long, SGAAssemblyResult> results, final String outputDir){
         results.cache(); // cache because Spark doesn't have an efficient RDD.split(predicate) yet
 
-        // save fasta file contents
+        // save fasta file contents or failure message
         final JavaPairRDD<Long, SGAAssemblyResult> success = results.filter(entry -> entry._2().assembledContigs!=null);
         final JavaPairRDD<Long, SGAAssemblyResult> failure = results.filter(entry -> entry._2().assembledContigs==null);
 
-        //final long numSucced = success.count();
-//        success.map(entry -> entry._1().toString() + "\n" + entry._2().assembledContigs.toString())
-//                //.repartition((int)Math.min(numSucced, succNumPartition))
-//                .saveAsTextFile(outputDir+"_0");
+        if(!success.isEmpty()){
+            success.map(entry -> entry._1().toString() + "\n" + entry._2().assembledContigs.toString())
+                    .saveAsTextFile(outputDir+"_0");
+        }
 
-        //final long numErred = failure.count();
-        failure.map(entry ->  entry._1().toString() + "\n" + entry._2().collectiveRuntimeInfo.toString())
-                //.repartition((int)Math.min(numErred, erredNumPartition))
-                .saveAsTextFile(outputDir+"_1");
+        if(!failure.isEmpty()){
+            failure.map(entry ->  entry._1().toString() + "\n" + entry._2().collectiveRuntimeInfo.toString())
+                    .saveAsTextFile(outputDir+"_1");
+        }
     }
 
     /**
      * Performs assembly on the FASTA files pointed to by the URI that is associated with the breakpoint identified by the long ID.
      * Actual assembly work is delegated to other functions.
      * @param fastqOfABreakpoint    the (partial) URI to the FASTQ file and FASTQ file contents as String
+     * @param subStringInFilenameToScrub the part in a file name that must be stripped out to extract breakpoint ID, e.g. "assembly1234" -> 1234
      * @param sgaPath               full path to SGA
      * @param runCorrections        user's decision to run SGA's corrections (with default parameter values) or not
      * @return                      failure message (if process erred) or contig FASTA file contents (if process succeeded) associated with the breakpoint ID
@@ -116,12 +112,12 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
      */
     @VisibleForTesting
     static Tuple2<Long, SGAAssemblyResult> performAssembly(final Tuple2<String, String> fastqOfABreakpoint,
-                                                           final String subStringInFilenameToStripout,
+                                                           final String subStringInFilenameToScrub,
                                                            final String sgaPath,
                                                            final boolean runCorrections)
     throws IOException{
 
-        final Tuple2<Long, File> localFASTQFileForOneBreakpoint = writeToLocal(fastqOfABreakpoint, subStringInFilenameToStripout);
+        final Tuple2<Long, File> localFASTQFileForOneBreakpoint = writeToLocal(fastqOfABreakpoint, subStringInFilenameToScrub);
 
         final SGAAssemblyResult assembledContigsFileAndRuntimeInfo = runSGAModulesInSerial(sgaPath, localFASTQFileForOneBreakpoint._2(), runCorrections);
 
@@ -414,7 +410,7 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         public final List<SGAModule.RuntimeInfo> collectiveRuntimeInfo;
 
         public SGAAssemblyResult(final List<String> fastaContents, final List<SGAModule.RuntimeInfo> collectedRuntimeInfo){
-            this.assembledContigs      = new ContigsCollection(fastaContents);
+            this.assembledContigs      =  null== fastaContents ? null : new ContigsCollection(fastaContents);
             this.collectiveRuntimeInfo = collectedRuntimeInfo;
         }
 
@@ -473,6 +469,9 @@ public final class RunSGAViaProcessBuilderOnSpark extends GATKSparkTool {
         }
 
         public List<String> toListOfStrings(){
+            if(null==contents){
+                return null;
+            }
             final List<String> res = new ArrayList<>();
             for(final Tuple2<ContigID, ContigSequence> contig : contents){
                 res.add(contig._1().toString());

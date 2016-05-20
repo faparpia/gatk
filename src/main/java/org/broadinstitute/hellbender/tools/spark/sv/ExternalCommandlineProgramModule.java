@@ -19,7 +19,8 @@ public abstract class ExternalCommandlineProgramModule {
     /**
      * Runtime information of this module collected throughout its run.
      */
-    public static final class RuntimeInfo{
+    public static final class RuntimeInfo implements Serializable{
+        private static final long serialVersionUID = 1L;
 
         /**
          * Return status of running the underlying program:
@@ -50,7 +51,7 @@ public abstract class ExternalCommandlineProgramModule {
         // for parsing contents to human readable string
         @Override
         public String toString(){
-            String result = moduleName + "\n";
+            String result = moduleName + "\t";
             switch (returnStatus){
                 case STARTFAIL:
                     result += " failed to start.\n"; break;
@@ -63,14 +64,11 @@ public abstract class ExternalCommandlineProgramModule {
                 default://SUCCESS
                     result += " successfully executed.\n";
             }
-            if(null!=stdoutMsg || !stdoutMsg.isEmpty()){
-                result += " Module stdout message: \n";
-                result += stdoutMsg;
-            }
-            if(null!=stderrMsg || !stderrMsg.isEmpty()){
-                result += " Module stderr message: \n";
-                result += stderrMsg;
-            }
+            result += " Module stdout message: \n";
+            result += null!=stdoutMsg ? stdoutMsg+"\n" : "is empty\n";
+
+            result += " Module stderr message: \n";
+            result += null!=stderrMsg ? stderrMsg+"\n" : "is empty\n";
             return result;
         }
     }
