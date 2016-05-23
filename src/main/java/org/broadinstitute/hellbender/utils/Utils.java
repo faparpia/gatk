@@ -254,6 +254,39 @@ public final class Utils {
     }
 
     /**
+     * Splits a String using indexOf instead of regex to speed things up.
+     *
+     * @param str the string to split.
+     * @param delimiter the delimiter used to split the string.
+     * @return an array of tokens.
+     */
+    public static ArrayList<String> split(String str, String delimiter) {
+        return split(str, delimiter, 10);
+    }
+
+    /**
+     * Splits a String using indexOf instead of regex to speed things up.
+     *
+     * @param str the string to split.
+     * @param delimiter the delimiter used to split the string.
+     * @param expectedNumTokens The number of tokens expected. This is used to initialize the ArrayList.
+     * @return an array of tokens.
+     */
+    public static ArrayList<String> split(String str, String delimiter, int expectedNumTokens) {
+        final ArrayList<String> result =  new ArrayList<String>(expectedNumTokens);
+
+        int delimiterIdx = -1;
+        do {
+            final int tokenStartIdx = delimiterIdx + 1;
+            delimiterIdx = str.indexOf(delimiter, tokenStartIdx);
+            final String token = (delimiterIdx != -1 ? str.substring(tokenStartIdx, delimiterIdx) : str.substring(tokenStartIdx) );
+            result.add(token);
+        } while( delimiterIdx != -1 );
+
+        return result;
+    }
+
+    /**
      * Returns a {@link List List&lt;Integer&gt;} representation of an primitive int array.
      * @param values the primitive int array to represent.
      * @return never code {@code null}. The returned list will be unmodifiable yet it will reflect changes in values in the original array yet

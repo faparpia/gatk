@@ -1135,4 +1135,14 @@ public final class MathUtils {
 
         return likelihood;
     }
+
+    public static int countOccurrences(final boolean element, final boolean[] array) {
+        int count = 0;
+        for (final boolean b : array) {
+            if (element == b)
+                count++;
+        }
+
+        return count;
+    }
 }
