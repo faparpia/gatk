@@ -6,6 +6,7 @@ import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.google.cloud.dataflow.sdk.options.PipelineOptions;
 import htsjdk.samtools.*;
+import org.apache.spark.HashPartitioner;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.broadcast.Broadcast;
@@ -40,6 +41,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
     //private static final int MAX_FRAGMENT_LEN = 2000;
     private static final int MAX_COVERAGE = 1000;
     private static final float ASSEMBLY_TO_MAPPED_SIZE_RATIO = 7.f;
+    private static final int MIN_HF_KMER_COUNT = 200;
 
     private static final SimpleDateFormat dateFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss ");
 
@@ -88,10 +90,10 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
         final SAMFileHeader header = getHeaderForReads();
         final JavaRDD<GATKRead> reads = getUnfilteredReads();
         final HopscotchHashSet<QNameAndInterval> qNamesSet;
-        int nIntervals;
-        if ( true ) {
+        final int nIntervals;
+        {
             final HopscotchHashSet<KmerAndInterval> kmerAndIntervalsSet;
-            if ( true ) {
+            {
                 final ReadMetadata readMetadata = getMetadata(header, getMeanBasesPerTemplate(reads));
                 final Broadcast<ReadMetadata> broadcastMetadata = ctx.broadcast(readMetadata);
                 final List<Interval> intervals =
@@ -212,12 +214,20 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                                                           final JavaRDD<GATKRead> reads,
                                                           final Locations locations,
                                                           final PipelineOptions pipelineOptions ) {
-        final Broadcast<Set<SVKmer>> broadcastKmerKillSet =
-                ctx.broadcast(SVKmer.readKmersFile(locations.kmersToIgnoreFilename, pipelineOptions));
+        final Broadcast<Set<SVKmer>> broadcastKmerKillSet;
+        {
+            final Set<SVKmer> kmerKillSet = SVKmer.readKmersFile(locations.kmersToIgnoreFilename, pipelineOptions);
+            log("Ignoring " + kmerKillSet.size() + " genomically common kmers.");
+            final List<SVKmer> kmerKillList = getHighCountKmers(reads);
+            log("Ignoring " + kmerKillList.size() + " common kmers in the reads.");
+            kmerKillSet.addAll(kmerKillList);
+            log("Ignoring a total of " + kmerKillSet.size() + " unique common kmers.");
+            broadcastKmerKillSet = ctx.broadcast(kmerKillSet);
+        }
         final Broadcast<HopscotchHashSet<QNameAndInterval>> broadcastQNameAndIntervalsSet =
                 ctx.broadcast(qNamesSet);
 
-        // given a set of template names with interval IDs and a kill set of genomically ubiquitous kmers,
+        // given a set of template names with interval IDs and a kill set of ubiquitous kmers,
         // produce a set of interesting kmers for each interval ID
         final List<KmerAndInterval> kmerIntervals =
             reads
@@ -246,8 +256,23 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             }
         }
 
-        log("Discovered "+ kmerIntervals.size() +" kmers.");
+        log("Discovered " + kmerIntervals.size() + " kmers.");
         return kmerIntervals;
+    }
+
+    private static List<SVKmer> getHighCountKmers( final JavaRDD<GATKRead> reads ) {
+        final int nPartitions = reads.partitions().size();
+        return reads
+                .filter(read ->
+                        !read.isSecondaryAlignment() && !read.isSupplementaryAlignment() &&
+                                !read.isDuplicate() && !read.failsVendorQualityCheck())
+                .mapPartitions(KmerCounter::new, false)
+                .mapToPair(kmerAndCount -> new Tuple2<>(new SVKmer(kmerAndCount), kmerAndCount.getCount()))
+                .combineByKey(i -> i, Integer::sum, Integer::sum, new HashPartitioner(nPartitions), false, null)
+                .filter(t2 -> t2._2 >= MIN_HF_KMER_COUNT)
+                .map(t2 -> t2._1)
+                .collect();
+
     }
 
     /** find template names for reads mapping to each interval */
@@ -870,6 +895,82 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
             }
             return tupleList.iterator();
         }
+    }
+
+
+    /**
+     * A <Kmer,count> pair.
+     * Note:  hashCode and equality does not depend on count, and that's on purpose.
+     * This is actually a compacted (K,V) pair, and the hashCode and equality is on K only.
+     */
+    @DefaultSerializer(KmerAndCount.Serializer.class)
+    private final static class KmerAndCount extends SVKmer {
+        private int count;
+
+        KmerAndCount(final SVKmer kmer ) {
+            super(kmer);
+            this.count = 0;
+        }
+
+        private KmerAndCount(final Kryo kryo, final Input input ) {
+            super(kryo, input);
+            count = input.readInt();
+        }
+
+        protected void serialize( final Kryo kryo, final Output output ) {
+            super.serialize(kryo, output);
+            output.writeInt(count);
+        }
+
+        @Override
+        public boolean equals( final Object obj ) {
+            return obj instanceof KmerAndCount && equals((KmerAndCount)obj);
+        }
+
+        public boolean equals( final KmerAndCount that ) {
+            return super.equals(that);
+        }
+
+        public int getCount() { return count; }
+        public void incrementCount() { count += 1; }
+
+        @Override
+        public String toString() { return super.toString(SVConstants.KMER_SIZE)+" "+count; }
+
+        public static final class Serializer extends com.esotericsoftware.kryo.Serializer<KmerAndCount> {
+            @Override
+            public void write( final Kryo kryo, final Output output, final KmerAndCount kmerAndCount) {
+                kmerAndCount.serialize(kryo, output);
+            }
+
+            @Override
+            public KmerAndCount read(final Kryo kryo, final Input input, final Class<KmerAndCount> klass ) {
+                return new KmerAndCount(kryo, input);
+            }
+        }
+    }
+
+    private final static class KmerCounter implements Iterable<KmerAndCount> {
+        private static final int KMERS_PER_PARTITION_GUESS = 20000000;
+        private static final int MIN_KMER_COUNT = 2;
+        private final HopscotchHashSet<KmerAndCount> kmerSet;
+
+        KmerCounter( final Iterator<GATKRead> readItr ) {
+            kmerSet = new HopscotchHashSet<>(KMERS_PER_PARTITION_GUESS);
+            while ( readItr.hasNext() ) {
+                final Iterator<SVKmer> kmers = new SVKmerizer(readItr.next().getBases(),SVConstants.KMER_SIZE);
+                while ( kmers.hasNext() ) {
+                    kmerSet.put(new KmerAndCount(kmers.next().canonical(SVConstants.KMER_SIZE))).incrementCount();
+                }
+            }
+            final Iterator<KmerAndCount> kmerItr = kmerSet.iterator();
+            while ( kmerItr.hasNext() ) {
+                if ( kmerItr.next().getCount() < MIN_KMER_COUNT ) kmerItr.remove();
+            }
+        }
+
+        @Override
+        public Iterator<KmerAndCount> iterator() { return kmerSet.iterator(); }
     }
 
     /**
