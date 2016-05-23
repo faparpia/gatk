@@ -126,7 +126,7 @@ public final class GATKVariantContextUtils {
         final List<Integer> sacIndexesToUse = determineSACIndexesToUse(vc, allelesToUse);
 
         // create the new genotypes
-        return createGenotypesWithSubsettedLikelihoods(vc.getGenotypes(), vc, allelesToUse, sacIndexesToUse, assignGenotypes);
+        return createGenotypesWithSubsettedLikelihoods(vc.getGenotypes(), vc, allelesToUse, likelihoodIndexesToUse, sacIndexesToUse, assignGenotypes);
     }
 
 
@@ -188,25 +188,32 @@ public final class GATKVariantContextUtils {
     }
 
     /**
-     * Create the new GenotypesContext with the subsetted PLs and ADs
+     * Create the new GenotypesContext with the subsetted PLs, SACs and ADs
      *
      * @param originalGs               the original GenotypesContext
-     * @param vc                       the original VariantContext
+     * @param originalVC               the original VariantContext
      * @param allelesToUse             the actual alleles to use with the new Genotypes
-     * @param likelihoodIndexesToUse   the indexes in the PL to use given the allelesToUse (@see #determineLikelihoodIndexesToUse())
+     * @param likelihoodIndexesToUse   the indexes in the PL to use given the allelesToUse (@see #determineDiploidLikelihoodIndexesToUse())
+     * @param sacIndexesToUse          the indexes in the SAC to use given the allelesToUse (@see #determineSACIndexesToUse())
      * @param assignGenotypes          assignment strategy for the (subsetted) PLs
      * @return a new non-null GenotypesContext
      */
     private static GenotypesContext createGenotypesWithSubsettedLikelihoods(final GenotypesContext originalGs,
-                                                                            final VariantContext vc,
+                                                                            final VariantContext originalVC,
                                                                             final List<Allele> allelesToUse,
                                                                             final List<Integer> likelihoodIndexesToUse,
+                                                                            final List<Integer> sacIndexesToUse,
                                                                             final GenotypeAssignmentMethod assignGenotypes) {
+
+        if ( originalGs == null ) throw new IllegalArgumentException("the original GenotypesContext cannot be null");
+        if ( originalVC == null ) throw new IllegalArgumentException("the original VariantContext cannot be null");
+        if ( allelesToUse == null ) throw new IllegalArgumentException("the alleles to use cannot be null");
+
         // the new genotypes to create
         final GenotypesContext newGTs = GenotypesContext.create(originalGs.size());
 
         // make sure we are seeing the expected number of likelihoods per sample
-        final int expectedNumLikelihoods = GenotypeLikelihoods.numLikelihoods(vc.getNAlleles(), 2);
+        final int expectedNumLikelihoods = GenotypeLikelihoods.numLikelihoods(originalVC.getNAlleles(), 2);
 
         // the samples
         final List<String> sampleIndices = originalGs.getSampleNamesOrderedByName();
@@ -216,7 +223,7 @@ public final class GATKVariantContextUtils {
             final Genotype g = originalGs.get(sampleIndices.get(k));
             final GenotypeBuilder gb = new GenotypeBuilder(g);
 
-            // create the new likelihoods array from the alleles we are allowed to use
+            // create the new likelihoods array from the used alleles
             double[] newLikelihoods;
             if ( !g.hasLikelihoods() ) {
                 // we don't have any likelihoods, so we null out PLs and make G ./.
@@ -227,7 +234,7 @@ public final class GATKVariantContextUtils {
                 if ( likelihoodIndexesToUse == null ) {
                     newLikelihoods = originalLikelihoods;
                 } else if ( originalLikelihoods.length != expectedNumLikelihoods ) {
-                    logger.debug("Wrong number of likelihoods in sample " + g.getSampleName() + " at " + vc + " got " + g.getLikelihoodsString() + " but expected " + expectedNumLikelihoods);
+                    logger.debug("Wrong number of likelihoods in sample " + g.getSampleName() + " at " + originalVC + " got " + g.getLikelihoodsString() + " but expected " + expectedNumLikelihoods);
                     newLikelihoods = null;
                 } else {
                     newLikelihoods = new double[likelihoodIndexesToUse.size()];
@@ -245,11 +252,17 @@ public final class GATKVariantContextUtils {
                     gb.PL(newLikelihoods);
             }
 
+            // create the new strand allele counts array from the used alleles
+            if ( g.hasExtendedAttribute(GATKVCFConstants.STRAND_COUNT_BY_SAMPLE_KEY)){
+                int[] newSACs = makeNewSACs(g, sacIndexesToUse);
+                gb.attribute(GATKVCFConstants.STRAND_COUNT_BY_SAMPLE_KEY, newSACs);
+            }
+
             updateGenotypeAfterSubsetting(g.getAlleles(), gb, assignGenotypes, newLikelihoods, allelesToUse);
             newGTs.add(gb.make());
         }
 
-        return fixADFromSubsettedAlleles(newGTs, vc, allelesToUse);
+        return fixADFromSubsettedAlleles(newGTs, originalVC, allelesToUse);
     }
 
     /**
@@ -1016,48 +1029,58 @@ public final class GATKVariantContextUtils {
     }
 
     /**
-     * Updates the PLs and AD of the Genotypes in the newly selected VariantContext to reflect the fact that some alleles
+     * Updates the PLs, SACs and AD of the Genotypes in the newly selected VariantContext to reflect the fact that some alleles
      * from the original VariantContext are no longer present.
      *
      * @param selectedVC  the selected (new) VariantContext
      * @param originalVC  the original VariantContext
      * @return a new non-null GenotypesContext
      */
-    public static GenotypesContext updatePLsAndAD(final VariantContext selectedVC, final VariantContext originalVC) {
+    public static GenotypesContext updatePLsSACsAD(final VariantContext selectedVC, final VariantContext originalVC) {
+        if ( selectedVC == null ) throw new IllegalArgumentException("the selected VariantContext cannot be null");
+        if ( originalVC == null ) throw new IllegalArgumentException("the original VariantContext cannot be null");
+
         final int numNewAlleles = selectedVC.getAlleles().size();
         final int numOriginalAlleles = originalVC.getAlleles().size();
 
         // if we have more alternate alleles in the selected VC than in the original VC, then something is wrong
-        if ( numNewAlleles > numOriginalAlleles ) {
-            throw new IllegalArgumentException("Attempting to fix PLs and AD from what appears to be a *combined* VCF and not a selected one");
-        }
+        if ( numNewAlleles > numOriginalAlleles )
+            throw new IllegalArgumentException("Attempting to fix PLs, SACs and AD from what appears to be a *combined* VCF and not a selected one");
 
         final GenotypesContext oldGs = selectedVC.getGenotypes();
 
         // if we have the same number of alternate alleles in the selected VC as in the original VC, then we don't need to fix anything
-        if ( numNewAlleles == numOriginalAlleles ) {
+        if ( numNewAlleles == numOriginalAlleles )
             return oldGs;
-        }
 
-        return fixGenotypesFromSubsettedAlleles(oldGs, originalVC, selectedVC.getAlleles());
+        return fixDiploidGenotypesFromSubsettedAlleles(oldGs, originalVC, selectedVC.getAlleles());
     }
 
+
     /**
-     * Fix the PLs and ADs for the GenotypesContext of a VariantContext that has been subset
+     * Fix the PLs, SACs and ADs for the GenotypesContext of a VariantContext that has been subset
      *
      * @param originalGs       the original GenotypesContext
      * @param originalVC       the original VariantContext
      * @param allelesToUse     the new (sub)set of alleles to use
      * @return a new non-null GenotypesContext
      */
-    static private GenotypesContext fixGenotypesFromSubsettedAlleles(final GenotypesContext originalGs, final VariantContext originalVC, final List<Allele> allelesToUse) {
+    static private GenotypesContext fixDiploidGenotypesFromSubsettedAlleles(final GenotypesContext originalGs, final VariantContext originalVC, final List<Allele> allelesToUse) {
 
-        // we need to determine which of the alternate alleles (and hence the likelihoods) to use and carry forward
-        final List<Integer> likelihoodIndexesToUse = determineLikelihoodIndexesToUse(originalVC, allelesToUse);
+        if ( originalGs == null ) throw new IllegalArgumentException("the selected GenotypesContext cannot be null");
+        if ( originalVC == null ) throw new IllegalArgumentException("the original VariantContext cannot be null");
+        if ( allelesToUse == null ) throw new IllegalArgumentException("the alleles to use cannot be null");
+
+        // find the likelihoods indexes to use from the used alternate alleles
+        final List<Integer> likelihoodIndexesToUse = determineDiploidLikelihoodIndexesToUse(originalVC, allelesToUse);
+
+        // find the strand allele count indexes to use from the used alternate alleles
+        final List<Integer> sacIndexesToUse = determineSACIndexesToUse(originalVC, allelesToUse);
 
         // create the new genotypes
-        return createGenotypesWithSubsettedLikelihoods(originalGs, originalVC, allelesToUse, likelihoodIndexesToUse, GenotypeAssignmentMethod.DO_NOT_ASSIGN_GENOTYPES);
+        return createGenotypesWithSubsettedLikelihoods(originalGs, originalVC, allelesToUse, likelihoodIndexesToUse, sacIndexesToUse, GenotypeAssignmentMethod.DO_NOT_ASSIGN_GENOTYPES);
     }
+
     /**
      * Figure out which likelihood indexes to use for a selected down set of alleles
      *
