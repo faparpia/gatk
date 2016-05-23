@@ -227,7 +227,7 @@ public final class FindBreakpointEvidenceSpark extends GATKSparkTool {
                     new MapPartitioner<>(readItr,
                         new QNameKmerizer(broadcastQNameAndIntervalsSet.value(),
                                         broadcastKmerKillSet.value())), false)
-            .reduceByKey( (c1, c2) -> c1+c2 )
+            .reduceByKey(Integer::sum)
             .mapPartitions(itr -> new KmerCleaner().call(itr))
             .collect();
 

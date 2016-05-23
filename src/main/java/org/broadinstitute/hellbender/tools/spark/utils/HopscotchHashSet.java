@@ -387,18 +387,35 @@ public final class HopscotchHashSet<T> extends AbstractSet<T> {
 
     @SuppressWarnings("unchecked")
     private void resize() {
+        if ( buckets == null ) throw new IllegalStateException("OMG I have no buckets.");
+        final int oldCapacity = capacity;
+        final int oldSize = size;
         final T[] oldBuckets = buckets;
-        if ( oldBuckets == null ) throw new IllegalStateException("OMG I have no buckets.");
+        final byte[] oldStatus = status;
 
         capacity = bumpCapacity(capacity);
+        size = 0;
         buckets = (T[])new Object[capacity];
         status = new byte[capacity];
 
-        final int fixSize = size;
-        for (final T entry : oldBuckets) {
-            if (entry != null) insert(entry);
+        try {
+            int idx = 0;
+            do {
+                final T entry = oldBuckets[idx];
+                if ( entry != null ) insert(entry);
+            }
+            while ( (idx = (idx+127)%oldCapacity) != 0 );
+        } catch ( IllegalStateException ise ) {
+            capacity = oldCapacity;
+            size = oldSize;
+            buckets = oldBuckets;
+            status = oldStatus;
+            throw new IllegalStateException("Hopscotching failed at load factor "+1.*size/capacity+", and resizing didn't help.");
         }
-        size = fixSize;
+
+        if ( size != oldSize ) {
+            throw new IllegalStateException("Lost some elements during resizing.");
+        }
     }
 
     private static int computeCapacity( final int size ) {

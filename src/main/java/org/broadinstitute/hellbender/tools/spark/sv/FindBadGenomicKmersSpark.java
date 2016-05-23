@@ -91,7 +91,7 @@ public final class FindBadGenomicKmersSpark extends GATKSparkTool {
                         SVKmerizer.stream(seq, SVConstants.KMER_SIZE)
                                 .map(kmer -> new Tuple2<>(kmer.canonical(SVConstants.KMER_SIZE),1))
                                 .collect(Collectors.toCollection(() -> new ArrayList<>(seq.length))))
-                .reduceByKey(( v1, v2 ) -> v1 + v2)
+                .reduceByKey(Integer::sum)
                 .filter(kv -> kv._2 > MAX_KMER_FREQ)
                 .map(kv -> kv._1)
                 .collect();

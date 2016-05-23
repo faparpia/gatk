@@ -148,13 +148,25 @@ public class SVKmer implements Comparable<SVKmer> {
 
     @Override
     public final int hashCode() {
-        final int mult = 1103515245;
-        int result = 12345;
-        result = mult * result + (int)(valHigh >> 32);
-        result = mult * result + (int)valHigh;
-        result = mult * result + (int)(valLow >> 32);
-        result = mult * result + (int)valLow;
-        return mult * result;
+        // 32-bit FNV-1a algorithm
+        return fnvLong(fnvLong((int)2166136261L, valHigh), valLow);
+    }
+
+    private static int fnvLong( final int start, final long toHash ) {
+        return fnvInt(fnvInt(start, (int)(toHash >> 32)), (int)toHash);
+    }
+
+    private static int fnvInt( int start, final int toHash ) {
+        final int mult = 16777619;
+        start ^= (toHash >> 24) & 0xff;
+        start *= mult;
+        start ^= (toHash >> 16) & 0xff;
+        start *= mult;
+        start ^= (toHash >> 8) & 0xff;
+        start *= mult;
+        start ^= toHash & 0xff;
+        start *= mult;
+        return start;
     }
 
     /**
