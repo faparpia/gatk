@@ -25,8 +25,6 @@ import java.util.*;
  */
 public abstract class GenotypingEngine<Config extends StandardCallerArgumentCollection> {
 
-    protected final AFCalculatorProvider afCalculatorProvider   ;
-
     protected final Config configuration;
 
     protected VariantAnnotatorEngine annotationEngine;
@@ -37,9 +35,6 @@ public abstract class GenotypingEngine<Config extends StandardCallerArgumentColl
 
     protected final SampleList samples;
 
-    private final AFPriorProvider log10AlleleFrequencyPriorsSNPs;
-
-    private final AFPriorProvider log10AlleleFrequencyPriorsIndels;
 
     /**
      * Construct a new genotyper engine, on a specific subset of samples.
@@ -50,84 +45,18 @@ public abstract class GenotypingEngine<Config extends StandardCallerArgumentColl
      *
      * @throws IllegalArgumentException if any of {@code samples}, {@code configuration} is {@code null}.
      */
-    protected GenotypingEngine(final Config configuration,
-                               final SampleList samples,
-                               final AFCalculatorProvider afCalculatorProvider) {
+    protected GenotypingEngine(final Config configuration, final SampleList samples) {
 
         if (configuration == null) {
             throw new IllegalArgumentException("the configuration cannot be null");
-        }
-        if (samples == null) {
+        } else if (samples == null) {
             throw new IllegalArgumentException("the sample list provided cannot be null");
         }
-        if (afCalculatorProvider == null) {
-            throw new IllegalArgumentException("the AF calculator provider cannot be null");
-        }
 
-        this.afCalculatorProvider = afCalculatorProvider;
         this.configuration = configuration;
         logger = LogManager.getLogger(getClass());
         this.samples = samples;
         numberOfGenomes = this.samples.numberOfSamples() * configuration.genotypeArgs.samplePloidy;
-        log10AlleleFrequencyPriorsSNPs = composeAlleleFrequencyPriorProvider(configuration.genotypeArgs.snpHeterozygosity);
-        log10AlleleFrequencyPriorsIndels = composeAlleleFrequencyPriorProvider(configuration.genotypeArgs.indelHeterozygosity);
-    }
-
-    /**
-     * Function that fills vector with allele frequency priors. By default, infinite-sites, neutral variation prior is used,
-     * where Pr(AC=i) = theta/i where theta is heterozygosity
-     * @param N                                Number of chromosomes
-     * @param priors                           (output) array to be filled with priors
-     * @param heterozygosity                   default heterozygosity to use, if inputPriors is empty
-     * @param inputPriors                      Input priors to use (in which case heterozygosity is ignored)
-     */
-    public static void computeAlleleFrequencyPriors(final int N, final double[] priors, final double heterozygosity, final List<Double> inputPriors) {
-
-
-        double sum = 0.0;
-
-        if (!inputPriors.isEmpty()) {
-            // user-specified priors
-            if (inputPriors.size() != N) {
-                throw new UserException.BadArgumentValue("inputPrior", "Invalid length of inputPrior vector: vector length must be equal to # samples +1 ");
-            }
-
-            int idx = 1;
-            for (final double prior: inputPriors) {
-                if (prior < 0.0) {
-                    throw new UserException.BadArgumentValue("Bad argument: negative values not allowed", "inputPrior");
-                }
-                priors[idx++] = Math.log10(prior);
-                sum += prior;
-            }
-        }
-        else {
-            // for each i
-            for (int i = 1; i <= N; i++) {
-                final double value = heterozygosity / (double)i;
-                priors[i] = Math.log10(value);
-                sum += value;
-            }
-        }
-
-        // protection against the case of heterozygosity too high or an excessive number of samples (which break population genetics assumptions)
-        if (sum > 1.0) {
-            throw new UserException.BadArgumentValue("heterozygosity","The heterozygosity value is set too high relative to the number of samples to be processed, or invalid values specified if input priors were provided - try reducing heterozygosity value or correct input priors.");
-        }
-        // null frequency for AF=0 is (1 - sum(all other frequencies))
-        priors[0] = Math.log10(1.0 - sum);
-    }
-
-    /**
-     * Function that fills vector with allele frequency priors. By default, infinite-sites, neutral variation prior is used,
-     * where Pr(AC=i) = theta/i where theta is heterozygosity
-     * @param heterozygosity                   default heterozygosity to use, if inputPriors is empty*
-     * @throws IllegalArgumentException if {@code inputPriors} has size != {@code N} or any entry in {@code inputPriors} is not in the (0,1) range.
-     *
-     * @return never {@code null}.
-     */
-    public static AFPriorProvider composeAlleleFrequencyPriorProvider(final double heterozygosity) {
-            return new HeterozygosityAFPriorProvider(heterozygosity);
     }
 
     /**
@@ -221,11 +150,11 @@ public abstract class GenotypingEngine<Config extends StandardCallerArgumentColl
 
         final int defaultPloidy = configuration.genotypeArgs.samplePloidy;
         final int maxAltAlleles = configuration.genotypeArgs.MAX_ALTERNATE_ALLELES;
-        final AFCalculator afCalculator = afCalculatorProvider.getInstance(vc,defaultPloidy,maxAltAlleles);
-        final AFCalculationResult AFresult = afCalculator.getLog10PNonRef(vc, defaultPloidy,maxAltAlleles, getAlleleFrequencyPriors(vc,defaultPloidy,model));
 
         final OutputAlleleSubset outputAlternativeAlleles = calculateOutputAlleleSubset(AFresult);
 
+
+        // posterior probability that there was at least one alt allele in the samples at this VariantContext
         final double PoFGT0 = Math.pow(10, AFresult.getLog10PosteriorOfAFGT0());
 
         // note the math.abs is necessary because -10 * 0.0 => -0.0 which isn't nice
@@ -335,7 +264,7 @@ public abstract class GenotypingEngine<Config extends StandardCallerArgumentColl
 
 
     /**
-     * Provided the exact mode computations it returns the appropiate subset of alleles that progress to genotyping.
+     * Provided the exact mode computations it returns the appropriate subset of alleles that progress to genotyping.
      * @param afcr the exact model calcualtion result.
      * @return never {@code null}.
      */
@@ -496,30 +425,6 @@ public abstract class GenotypingEngine<Config extends StandardCallerArgumentColl
     }
 
     /**
-     * Returns the log10 prior probability for all possible allele counts from 0 to N where N is the total number of
-     * genomes (total-ploidy).
-     *
-     * @param vc the target variant-context, use to determine the total ploidy thus the possible ACs.
-     * @param defaultPloidy default ploidy to be assume if we do not have the ploidy for some sample in {@code vc}.
-     * @param model the calculation model (SNP,INDEL or MIXED) whose priors are to be retrieved.
-     * @throws java.lang.NullPointerException if either {@code vc} or {@code model} is {@code null}
-     * @return never {@code null}, an array with exactly <code>total-ploidy(vc) + 1</code> positions.
-     */
-    protected final double[] getAlleleFrequencyPriors( final VariantContext vc, final int defaultPloidy, final GenotypeLikelihoodsCalculationModel model ) {
-        final int totalPloidy = GATKVariantContextUtils.totalPloidy(vc, defaultPloidy);
-        switch (model) {
-            case SNP:
-            case GENERALPLOIDYSNP:
-                return log10AlleleFrequencyPriorsSNPs.forTotalPloidy(totalPloidy);
-            case INDEL:
-            case GENERALPLOIDYINDEL:
-                return log10AlleleFrequencyPriorsIndels.forTotalPloidy(totalPloidy);
-            default:
-                throw new IllegalArgumentException("Unexpected GenotypeCalculationModel " + model);
-        }
-    }
-
-    /**
      * Compute the log10 probability of a sample with sequencing depth and no alt allele is actually truly homozygous reference
      *
      * Assumes the sample is diploid
@@ -622,7 +527,6 @@ public abstract class GenotypingEngine<Config extends StandardCallerArgumentColl
         } else if (log10GenotypeLikelihoods.length != this.configuration.genotypeArgs.samplePloidy + 1) {
             throw new IllegalArgumentException("wrong likelihoods dimensions");
         } else {
-            final double[] log10Priors = log10AlleleFrequencyPriorsSNPs.forTotalPloidy(this.configuration.genotypeArgs.samplePloidy);
             final double log10ACeq0Likelihood = log10GenotypeLikelihoods[0];
             final double log10ACeq0Prior = log10Priors[0];
             final double log10ACeq0Posterior = log10ACeq0Likelihood + log10ACeq0Prior;
@@ -640,16 +544,7 @@ public abstract class GenotypingEngine<Config extends StandardCallerArgumentColl
                 return 0.0;
             }
 
-            //TODO bad way to calculate AC > 0 posterior that follows the current behaviour of ExactAFCalculator (StateTracker)
-            //TODO this is the lousy part... this code just adds up lks and priors of AC != 0 before as if
-            //TODO Sum(a_i * b_i) is equivalent to Sum(a_i) * Sum(b_i)
-            //TODO This has to be changed not just here but also in the AFCalculators (StateTracker).
-            final double log10ACgt0Likelihood = MathUtils.approximateLog10SumLog10(log10GenotypeLikelihoods, 1, log10GenotypeLikelihoods.length);
-            final double log10ACgt0Prior = MathUtils.approximateLog10SumLog10(log10Priors, 1, log10Priors.length);
-            final double log10ACgt0Posterior = log10ACgt0Likelihood + log10ACgt0Prior;
-            final double log10PosteriorNormalizationConstant = MathUtils.approximateLog10SumLog10(log10ACeq0Posterior, log10ACgt0Posterior);
-            //TODO End of lousy part.
-
+            //log10 posterior probability that no alt alleles exist in the samples
             final double normalizedLog10ACeq0Posterior = log10ACeq0Posterior - log10PosteriorNormalizationConstant;
             // This is another condition to return a 0.0 also present in AFCalculator code as well.
             if (normalizedLog10ACeq0Posterior >= QualityUtils.qualToErrorProbLog10(configuration.genotypeArgs.STANDARD_CONFIDENCE_FOR_EMITTING)) {
