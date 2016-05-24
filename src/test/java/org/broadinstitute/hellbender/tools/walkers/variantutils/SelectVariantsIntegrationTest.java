@@ -1,5 +1,6 @@
 package org.broadinstitute.hellbender.tools.walkers.variantutils;
 
+import org.broadinstitute.hellbender.exceptions.GATKException;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -710,4 +711,38 @@ public class SelectVariantsIntegrationTest extends CommandLineProgramTest {
         spec.executeTest("testMaxNoCall0_25--" + testFile, this);
     }
 
+    @Test
+    public void testSACSimpleDiploid() throws IOException {
+        final String testFile = getToolTestDataDir() + "261_S01_raw_variants_gvcf.vcf";
+
+        final IntegrationTestSpec spec = new IntegrationTestSpec(
+                baseTestString(" -trimAlternates", testFile),
+                Collections.singletonList(getToolTestDataDir() + "expected/" + "testSelectVariants_SimpleDiploid.vcf")
+        );
+
+        spec.executeTest("testSACSimpleDiploid" + testFile, this);
+    }
+
+    @Test
+    public void testSACDiploid() throws IOException {
+        final String testFile = getToolTestDataDir() + "diploid-multisample-sac.g.vcf";
+
+        final IntegrationTestSpec spec = new IntegrationTestSpec(
+                baseTestString(" -sn NA12891 -trimAlternates", testFile),
+                Collections.singletonList(getToolTestDataDir() + "expected/" + "testSelectVariants_SACDiploid.vcf")
+        );
+
+        spec.executeTest("testSACDiploid" + testFile, this);
+    }
+
+    @Test
+    public void testSACNonDiploid() throws IOException {
+        final String testFile = getToolTestDataDir() + "diploid-multisample-sac.g.vcf";
+
+        final IntegrationTestSpec spec = new IntegrationTestSpec(
+                baseTestString(" -sn NA12891 -trimAlternates", testFile), 0, GATKException.class
+        );
+
+        spec.executeTest("testSACNonDiploid" + testFile, this);
+    }
 }
